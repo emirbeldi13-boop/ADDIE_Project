@@ -28,7 +28,7 @@
  *  pedagotrack_kp_edits          : { [`${ensId}_${formationId}`]: { level: 1|2|3, ...data } }
  */
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { FORMATIONS as FORMATIONS_DEFAULT, COMPETENCES_RCET as COMPETENCES_DEFAULT } from '../constants/formations';
 import { CATALOGUE_FORMATIONS } from '../constants/catalogue';
 import {
@@ -40,6 +40,8 @@ import {
   normalizeToFive,
 } from '../utils/scoreCalculator';
 import { parseDate } from '../utils/dateUtils';
+import { useAuth } from './useAuth';
+import * as db from '../lib/db';
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -151,19 +153,6 @@ export const OVERRIDE_REASONS = [
   'Fragilité professionnelle identifiée',
   'Cas spécial',
 ];
-
-// ─── localStorage helpers ──────────────────────────────────────────────────────
-function load(key, fallback) {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? JSON.parse(v) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function save(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
 
 // Legacy date parse helper (replaced by unified parseDate in utils)
 function parseDateWrapper(str) {
@@ -517,204 +506,143 @@ function buildPriorityList(
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
-export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
+export function useDataStore() {
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(true);
+
   // ── Enseignants base state ─────────────────────────────────────────────────
-  const [ensEdits, setEnsEdits] = useState(() => load('pedagotrack_ens_edits', {}));
-  const [ensAdded, setEnsAdded] = useState(() => load('pedagotrack_ens_added', []));
-  const [ensDeleted, setEnsDeleted] = useState(() => load('pedagotrack_ens_deleted', []));
-  const [ensHistory, setEnsHistory] = useState(() => load('pedagotrack_ens_history', {}));
+  const [enseignantsRaw, setEnseignantsRaw] = useState([]);
+  const [ensDeleted, setEnsDeleted] = useState([]); // Still useful for UI filtering if needed
+  const [ensHistory, setEnsHistory] = useState({});
 
   // ── Sessions state ─────────────────────────────────────────────────────────
-  const [sessEdits, setSessEdits] = useState(() => load('pedagotrack_sessions_edits', {}));
-  const [sessAdded, setSessAdded] = useState(() => load('pedagotrack_sess_added', []));
-  const [sessDeleted, setSessDeleted] = useState(() => load('pedagotrack_sess_deleted', []));
+  const [sessionsRaw, setSessionsRaw] = useState([]);
 
   // ── Reference data ─────────────────────────────────────────────────────────
-  const [formations, setFormations] = useState(() => {
-    const loaded = load('pedagotrack_formations', null);
-    const baseFormations = { ...FORMATIONS_DEFAULT, ...CATALOGUE_FORMATIONS };
-    
-    if (!loaded) return baseFormations;
-
-    const merged = { ...baseFormations };
-    let hasOrphans = false;
-    
-    Object.keys(loaded).forEach(k => {
-      const current = loaded[k];
-      const base = baseFormations[k];
-      
-      if (!base) {
-        // If it's not in our official catalog or root families, it's an orphan/typo
-        hasOrphans = true;
-        return; // Skip this key (effectively deleting it)
-      }
-
-      const isLegacy = current.libelle?.includes('Scénarisation') || current.libelle?.includes('Différenciation');
-      const isRootFamily = k.length <= 2; 
-      
-      if (isLegacy || isRootFamily) {
-        merged[k] = {
-          ...base,
-          ...(isLegacy ? {} : current), 
-          targetedComps: base.targetedComps || current.targetedComps || []
-        };
-      } else {
-        merged[k] = {
-          ...base,
-          ...current,
-          targetedComps: current.targetedComps || base.targetedComps || []
-        };
-      }
-    });
-
-    // If we removed something, we should ideally trigger a save, 
-    // but returning merged is enough for the current session.
-    return merged;
-  });
-  const [competences, setCompetences] = useState(() => {
-    const loaded = load('pedagotrack_competences', null);
-    // Migration forcée : si les anciennes compétences sont détectées, on bascule sur le RCET
-    if (loaded && (loaded.C1 || loaded.C2)) {
-      return COMPETENCES_DEFAULT;
-    }
-    return loaded || COMPETENCES_DEFAULT;
-  });
-  const [crefocs, setCrefocs] = useState(() => {
-    const loaded = load('pedagotrack_crefocs', null);
-    if (!loaded) return CREFOCS_DEFAULT;
-
-    // Use loaded keys as the source of truth (respects deletions)
-    // Use loaded keys as the source of truth
-    const merged = { ...CREFOCS_DEFAULT };
-    Object.keys(loaded).forEach(k => {
-      merged[k] = loaded[k];
-    });
-    return merged;
-  });
-  const [globalTargetedComps, setGlobalTargetedComps] = useState(() => {
-    const loaded = load('pedagotrack_global_targets', null);
-    // Migration forcée pour les cibles globales
-    if (loaded && loaded.some(c => c.startsWith('C'))) {
-      return Object.keys(COMPETENCES_DEFAULT);
-    }
-    return loaded || Object.keys(COMPETENCES_DEFAULT);
-  });
+  const [formations, setFormations] = useState(FORMATIONS_DEFAULT);
+  const [competences, setCompetences] = useState(COMPETENCES_DEFAULT);
+  const [crefocs, setCrefocs] = useState(CREFOCS_DEFAULT);
+  const [globalTargetedComps, setGlobalTargetedComps] = useState(Object.keys(COMPETENCES_DEFAULT));
 
   // ── §1.2 New visits store (per-competency scoring) ─────────────────────────
-  const [visits, setVisits] = useState(() => load('pedagotrack_visits', {}));
+  const [visits, setVisits] = useState({});
 
   // ── §2.2 Inspector overrides ───────────────────────────────────────────────
-  const [overrides, setOverrides] = useState(() => load('pedagotrack_overrides', {}));
+  const [overrides, setOverrides] = useState({});
 
   // ── §2.1 Availability declarations ────────────────────────────────────────
-  const [availability, setAvailability] = useState(() => load('pedagotrack_availability', {}));
+  const [availability, setAvailability] = useState({});
 
   // ── §5.4 Audit trail ──────────────────────────────────────────────────────
-  const [auditTrail, setAuditTrail] = useState(() => load('pedagotrack_audit_trail', []));
+  const [auditTrail, setAuditTrail] = useState([]);
 
   // ── §1.2 Temporal coefficients ─────────────────────────────────────────────
-  const [temporalCoeffs, setTemporalCoeffs] = useState(() =>
-    load('pedagotrack_temporal_coeffs', TEMPORAL_COEFFICIENTS_DEFAULT)
-  );
+  const [temporalCoeffs, setTemporalCoeffs] = useState(TEMPORAL_COEFFICIENTS_DEFAULT);
 
   // ── §2.6 Group score weights ───────────────────────────────────────────────
-  const [groupWeights, setGroupWeights] = useState(() =>
-    load('pedagotrack_group_weights', GROUP_WEIGHTS_DEFAULT)
-  );
+  const [groupWeights, setGroupWeights] = useState(GROUP_WEIGHTS_DEFAULT);
 
   // ── §2.7 Global score criteria ─────────────────────────────────────────────
-  const [globalCriteria, setGlobalCriteria] = useState(() =>
-    load('pedagotrack_global_criteria', GLOBAL_CRITERIA_DEFAULT)
-  );
+  const [globalCriteria, setGlobalCriteria] = useState(GLOBAL_CRITERIA_DEFAULT);
 
   // ── §2.8 Active formation filter ──────────────────────────────────────────
-  const [formationFilter, setFormationFilterState] = useState(() =>
-    load('pedagotrack_formation_filter', '')
-  );
+  const [formationFilter, setFormationFilterState] = useState('');
 
   // ── §3.1 Needs analysis decision ──────────────────────────────────────────
-  const [needsDecision, setNeedsDecision] = useState(() =>
-    load('pedagotrack_needs_decision', null)
-  );
-  const [needsWeights, setNeedsWeights] = useState(() =>
-    load('pedagotrack_needs_weights', { deficit: 0.40, studentImpact: 0.35, feasibility: 0.25 })
-  );
+  const [needsDecision, setNeedsDecision] = useState(null);
+  const [needsWeights, setNeedsWeights] = useState({ deficit: 0.40, studentImpact: 0.35, feasibility: 0.25 });
 
-  const [riskThresholds, setRiskThresholds] = useState(() =>
-    load('pedagotrack_risk_thresholds', { high: 70, medium: 40, urgency: 2.5 })
-  );
+  const [riskThresholds, setRiskThresholds] = useState({ high: 70, medium: 40, urgency: 2.5 });
 
-  const [strategicMode, setStrategicMode] = useState(() => load('pedagotrack_strategic_mode', false));
+  const [strategicMode, setStrategicMode] = useState(false);
 
-  const [autoposManual, setAutoposManual] = useState(() => load('pedagotrack_autopos_manual', {}));
+  const [autoposManual, setAutoposManual] = useState({});
 
   // ── Kirkpatrick Dynamic Evaluations ───────────────────────────────────────
-  const [kpEdits, setKpEdits] = useState(() => load('pedagotrack_kp_edits', {}));
+  const [kpEdits, setKpEdits] = useState({});
 
   // ── Referential (Global Catalogue) ─────────────────────────────────────────
-  const [referential, setReferential] = useState(() => {
-    const loaded = load('pedagotrack_referential', null);
-    if (!loaded) return CATALOGUE_FORMATIONS;
-    
-    // Merge or replace
-    const merged = { ...CATALOGUE_FORMATIONS };
-    Object.keys(loaded).forEach(k => {
-      merged[k] = loaded[k];
-    });
-    return merged;
-  });
+  const [referential, setReferential] = useState(CATALOGUE_FORMATIONS);
+
+  // ── Hydration ──────────────────────────────────────────────────────────────
+  const refresh = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const [
+        ens, sess, forms, comps, crf,
+        vst, ovr, avl, apm, kpe,
+        ref, aud, settings, autoposSeed
+      ] = await Promise.all([
+        db.fetchEnseignants(),
+        db.fetchSessions(),
+        db.fetchFormations(),
+        db.fetchCompetences(),
+        db.fetchCrefocs(),
+        db.fetchVisits(),
+        db.fetchOverrides(),
+        db.fetchAvailability(),
+        db.fetchAutoposManual(),
+        db.fetchKirkpatrickEdits(),
+        db.fetchReferential(),
+        db.fetchAuditTrail(),
+        db.fetchUserSettings(),
+        db.fetchAutopositionnement()
+      ]);
+
+      setEnseignantsRaw(ens);
+      setSessionsRaw(sess);
+      if (Object.keys(forms).length) setFormations(forms);
+      if (Object.keys(comps).length) setCompetences(comps);
+      if (Object.keys(crf).length) setCrefocs(crf);
+      
+      setVisits(vst);
+      setOverrides(ovr);
+      setAvailability(avl);
+      setAutoposManual(apm);
+      setKpEdits(kpe);
+      if (Object.keys(ref).length) setReferential(ref);
+      setAuditTrail(aud);
+
+      // Settings
+      if (settings.pedagotrack_temporal_coeffs) setTemporalCoeffs(settings.pedagotrack_temporal_coeffs);
+      if (settings.pedagotrack_group_weights) setGroupWeights(settings.pedagotrack_group_weights);
+      if (settings.pedagotrack_global_criteria) setGlobalCriteria(settings.pedagotrack_global_criteria);
+      if (settings.pedagotrack_global_targets) setGlobalTargetedComps(settings.pedagotrack_global_targets);
+      if (settings.pedagotrack_formation_filter) setFormationFilterState(settings.pedagotrack_formation_filter);
+      if (settings.pedagotrack_needs_decision) setNeedsDecision(settings.pedagotrack_needs_decision);
+      if (settings.pedagotrack_needs_weights) setNeedsWeights(settings.pedagotrack_needs_weights);
+      if (settings.pedagotrack_risk_thresholds) setRiskThresholds(settings.pedagotrack_risk_thresholds);
+      if (settings.pedagotrack_strategic_mode !== undefined) setStrategicMode(settings.pedagotrack_strategic_mode);
+
+      // Note: seedAutopos is still needed for calculations
+      // We can either store it in state or use it directly in useMemo.
+      // For now, let's store it.
+      setSeedAutopos(autoposSeed);
+
+    } catch (err) {
+      console.error('[useDataStore] refresh error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const [seedAutopos, setSeedAutopos] = useState([]);
 
   // ── Merged sessions ────────────────────────────────────────────────────────
   const sessions = useMemo(() => {
-    // 1. Base sessions (from seed data) - Filtered by deletion with ID hardening
-    const base = seedSessions
-      .filter(s => {
-        const id = s['ID Session'];
-        return !sessDeleted.some(deletedId => String(deletedId).trim() === String(id).trim());
-      })
-      .map(s => {
-        const edits = sessEdits[s['ID Session']];
-        if (!edits) return s;
-        
-        const mergedCdc = (s.cdc || edits.cdc) ? {
-          ...(s.cdc || {}),
-          ...(edits.cdc || {})
-        } : undefined;
-
-        return { ...s, ...edits, cdc: mergedCdc, _isEdited: true };
-      });
-    
-    // 2. Added sessions (manual) - Also apply Any edits
-    const added = sessAdded.map(s => {
-      const edits = sessEdits[s['ID Session']];
-      if (!edits) return { ...s, _isEdited: true };
-
-      const mergedCdc = (s.cdc || edits.cdc) ? {
-        ...(s.cdc || {}),
-        ...(edits.cdc || {})
-      } : undefined;
-
-      return { ...s, ...edits, cdc: mergedCdc, _isEdited: true };
-    });
-
-    return [...base, ...added];
-  }, [seedSessions, sessEdits, sessDeleted, sessAdded]);
+    return sessionsRaw;
+  }, [sessionsRaw]);
 
   // ── Merged enseignants (with priority computation) ─────────────────────────
   const priorityData = useMemo(() => {
-    // Apply edits/adds/deletes
-    const base = seedEnseignants
-      .filter(e => !ensDeleted.includes(e['ID']))
-      .map(e => {
-        const edits = ensEdits[e['ID']];
-        return edits ? { ...e, ...edits } : e;
-      });
-
-    const withAdded = [...base, ...ensAdded];
-
-    // Build priority list with all new logic
+    // Build priority list with all logic using raw data from DB
     return buildPriorityList(
-      withAdded,
+      enseignantsRaw,
       seedAutopos,
       visits,
       overrides,
@@ -734,8 +662,7 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
       crefocs
     );
   }, [
-    seedEnseignants, ensEdits, ensAdded, ensDeleted,
-    seedAutopos, visits, overrides, availability,
+    enseignantsRaw, seedAutopos, visits, overrides, availability,
     temporalCoeffs, groupWeights, globalCriteria, formationFilter,
     formations, globalTargetedComps, autoposManual, crefocs
   ]);
@@ -793,7 +720,7 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
   }, [kpEdits, sessions]);
 
   // ── §4 Audit trail helper ──────────────────────────────────────────────────
-  const addAuditEntry = useCallback((type, ensId, data) => {
+  const addAuditEntry = useCallback(async (type, ensId, data) => {
     const entry = {
       id: `AUD_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       type,
@@ -801,177 +728,104 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
       timestamp: new Date().toISOString(),
       data,
     };
-    setAuditTrail(prev => {
-      const next = [entry, ...prev];
-      save('pedagotrack_audit_trail', next);
-      return next;
-    });
+    await db.insertAuditEntry(entry, user.id);
+    setAuditTrail(prev => [entry, ...prev]);
     return entry;
-  }, []);
+  }, [user]);
 
   // ── §1.1 / §1.2 Visit operations ──────────────────────────────────────────
-  const addVisit = useCallback((ensId, visitData) => {
-    // visitData: { date, observer, scores: {C1..C7: number|null}, weights: {C1..C7: 0-100},
-    //             visitScore, note20, appreciation, visitType: 'official'|'informal' }
+  const addVisit = useCallback(async (ensId, visitData) => {
     const newVisit = {
       id: `VIS_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       ...visitData,
       recordedAt: new Date().toISOString(),
     };
 
-    // Batch: prepare all changes before writing
-    const nextVisits = { ...visits, [ensId]: [newVisit, ...(visits[ensId] || [])] };
-    const legacyUpdates = visitData.date ? {
-      'Date dernière visite': visitData.date,
-      'Note dernière visite /20': visitData.note20 ?? '—',
-      'Observateur': visitData.observer ?? '—',
-    } : null;
-    const nextEdits = legacyUpdates
-      ? { ...ensEdits, [ensId]: { ...(ensEdits[ensId] || {}), ...legacyUpdates } }
-      : ensEdits;
-
-    // Write both stores atomically
-    save('pedagotrack_visits', nextVisits);
-    if (legacyUpdates) save('pedagotrack_ens_edits', nextEdits);
-
-    // Update React state
-    setVisits(nextVisits);
-    if (legacyUpdates) setEnsEdits(nextEdits);
+    await db.upsertVisit(newVisit, user.id, ensId);
+    
+    // Refresh local state
+    const vst = await db.fetchVisits();
+    setVisits(vst);
 
     // § AUTO STATUS PROMOTION
     const currentEns = enseignants.find(e => e['ID'] === ensId);
     if (currentEns && currentEns['Statut'] === 'Stagiaire' && visitData.note20 !== undefined && visitData.note20 !== null) {
       const promotionUpdates = { 'Statut': 'Titulaire (en attente)' };
-      setEnsEdits(prev => {
-        const next = { ...prev, [ensId]: { ...(prev[ensId] || {}), ...nextEdits[ensId], ...promotionUpdates } };
-        save('pedagotrack_ens_edits', next);
-        return next;
-      });
+      await db.upsertEnseignant({ ...currentEns, ...promotionUpdates }, user.id);
+      setEnseignantsRaw(prev => prev.map(e => e['ID'] === ensId ? { ...e, ...promotionUpdates } : e));
       addAuditEntry('titularisation_recommended', ensId, { note: visitData.note20 });
     }
 
     addAuditEntry('visit_added', ensId, newVisit);
     return newVisit;
-  }, [visits, ensEdits, addAuditEntry]);
+  }, [user, enseignants, addAuditEntry]);
 
-  const deleteVisit = useCallback((ensId, visitId, reason) => {
-    setVisits(prev => {
-      const ensVisits = prev[ensId] || [];
-      const next = {
-        ...prev,
-        [ensId]: ensVisits.map(v =>
-          v.id === visitId
-            ? { ...v, deleted: true, deletedAt: new Date().toISOString(), deleteReason: reason || '' }
-            : v
-        ),
-      };
-      save('pedagotrack_visits', next);
-      addAuditEntry('visit_deleted', ensId, { visitId, reason });
-      return next;
-    });
-  }, [addAuditEntry]);
-
-  const restoreVisit = useCallback((ensId, visitId) => {
-    setVisits(prev => {
-      const ensVisits = prev[ensId] || [];
-      const next = {
-        ...prev,
-        [ensId]: ensVisits.map(v =>
-          v.id === visitId
-            ? { ...v, deleted: false, deletedAt: null, deleteReason: '' }
-            : v
-        ),
-      };
-      save('pedagotrack_visits', next);
-      addAuditEntry('visit_restored', ensId, { visitId });
-      return next;
-    });
-  }, [addAuditEntry]);
-
-  const updateVisit = useCallback((ensId, visitId, updatedData) => {
+  const deleteVisit = useCallback(async (ensId, visitId, reason) => {
     const ensVisits = visits[ensId] || [];
-    const visitIndex = ensVisits.findIndex(v => v.id === visitId);
-    if (visitIndex === -1) return;
+    const visit = ensVisits.find(v => v.id === visitId);
+    if (!visit) return;
 
-    const oldVisit = ensVisits[visitIndex];
-    if (oldVisit.finalized) {
-      console.warn("Attempted to edit a finalized visit.");
-      return;
-    }
+    const updatedVisit = { ...visit, deleted: true, deletedAt: new Date().toISOString(), deleteReason: reason || '' };
+    await db.upsertVisit(updatedVisit, user.id, ensId);
+    
+    setVisits(prev => ({
+      ...prev,
+      [ensId]: (prev[ensId] || []).map(v => v.id === visitId ? updatedVisit : v)
+    }));
+    addAuditEntry('visit_deleted', ensId, { visitId, reason });
+  }, [user, visits, addAuditEntry]);
 
-    const updatedVisit = {
-      ...oldVisit,
-      ...updatedData,
-      updatedAt: new Date().toISOString()
-    };
+  const restoreVisit = useCallback(async (ensId, visitId) => {
+    const ensVisits = visits[ensId] || [];
+    const visit = ensVisits.find(v => v.id === visitId);
+    if (!visit) return;
 
-    const nextEnsVisits = [...ensVisits];
-    nextEnsVisits[visitIndex] = updatedVisit;
-    const nextVisits = { ...visits, [ensId]: nextEnsVisits };
+    const updatedVisit = { ...visit, deleted: false, deletedAt: null, deleteReason: '' };
+    await db.upsertVisit(updatedVisit, user.id, ensId);
+    
+    setVisits(prev => ({
+      ...prev,
+      [ensId]: (prev[ensId] || []).map(v => v.id === visitId ? updatedVisit : v)
+    }));
+    addAuditEntry('visit_restored', ensId, { visitId });
+  }, [user, visits, addAuditEntry]);
 
-    // Profile synchronization logic
-    const officialVisits = nextEnsVisits.filter(v => !v.deleted && v.visitType === 'official');
-    let nextEdits = ensEdits;
+  const updateVisit = useCallback(async (ensId, visitId, updatedData) => {
+    const ensVisits = visits[ensId] || [];
+    const oldVisit = ensVisits.find(v => v.id === visitId);
+    if (!oldVisit) return;
 
-    if (officialVisits.length > 0) {
-      const sorted = [...officialVisits].sort((a, b) => {
-        const da = a.date.split('/').reverse().join('');
-        const db = b.date.split('/').reverse().join('');
-        return db.localeCompare(da);
-      });
-      const latest = sorted[0];
-      
-      const legacyUpdates = {
-        'Date dernière visite': latest.date,
-        'Note dernière visite /20': latest.note20 ?? '—',
-        'Observateur': latest.observer ?? '—',
-      };
-      nextEdits = { ...ensEdits, [ensId]: { ...(ensEdits[ensId] || {}), ...legacyUpdates } };
-    }
-
-    // Persist and Update State
-    save('pedagotrack_visits', nextVisits);
-    setVisits(nextVisits);
-    if (nextEdits !== ensEdits) {
-      save('pedagotrack_ens_edits', nextEdits);
-      setEnsEdits(nextEdits);
-    }
-
+    const updatedVisit = { ...oldVisit, ...updatedData, updatedAt: new Date().toISOString() };
+    await db.upsertVisit(updatedVisit, user.id, ensId);
+    
+    setVisits(prev => ({
+      ...prev,
+      [ensId]: (prev[ensId] || []).map(v => v.id === visitId ? updatedVisit : v)
+    }));
     addAuditEntry('visit_updated', ensId, { visitId, changes: updatedData });
     return updatedVisit;
-  }, [visits, ensEdits, addAuditEntry]);
+  }, [user, visits, addAuditEntry]);
 
   // ── §2.2 Override operations ───────────────────────────────────────────────
-  const setOverride = useCallback((ensId, reason, reasonText, scopes = ['GLOBAL']) => {
-    setOverrides(prev => {
-      const next = { 
-        ...prev, 
-        [ensId]: { 
-          active: true, 
-          reason, 
-          reasonText, 
-          scopes, // array of formation IDs or ['GLOBAL']
-          timestamp: new Date().toISOString() 
-        } 
-      };
-      save('pedagotrack_overrides', next);
-      return next;
-    });
+  const setOverride = useCallback(async (ensId, reason, reasonText, scopes = ['GLOBAL']) => {
+    const entry = { active: true, reason, reasonText, scopes, timestamp: new Date().toISOString() };
+    await db.upsertOverride(entry, user.id, ensId);
+    setOverrides(prev => ({ ...prev, [ensId]: entry }));
     addAuditEntry('override_set', ensId, { reason, scopes });
-  }, [addAuditEntry]);
+  }, [user, addAuditEntry]);
 
-  const removeOverride = useCallback((ensId) => {
+  const removeOverride = useCallback(async (ensId) => {
+    await db.deleteOverrideDB(ensId);
     setOverrides(prev => {
       const next = { ...prev };
       delete next[ensId];
-      save('pedagotrack_overrides', next);
       return next;
     });
     addAuditEntry('override_removed', ensId, { timestamp: new Date().toISOString() });
   }, [addAuditEntry]);
 
   // ── §2.1 Availability operations ──────────────────────────────────────────
-  const declareUnavailability = useCallback((ensId, fcode, justification) => {
+  const declareUnavailability = useCallback(async (ensId, fcode, justification) => {
     const entry = {
       declared: true,
       status: 'pending',
@@ -979,52 +833,37 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
       justification: justification || '',
       validatedAt: null,
     };
+    await db.upsertAvailability(entry, user.id, ensId, fcode);
     setAvailability(prev => {
       const teacherAvail = prev[ensId] || {};
-      const next = { ...prev, [ensId]: { ...teacherAvail, [fcode]: entry } };
-      save('pedagotrack_availability', next);
-      return next;
+      return { ...prev, [ensId]: { ...teacherAvail, [fcode]: entry } };
     });
     addAuditEntry('unavailability_declared', ensId, { entry, formation: fcode });
-  }, [addAuditEntry]);
+  }, [user, addAuditEntry]);
 
-  const validateAvailability = useCallback((ensId, fcode, decision, justification) => {
-    // decision: 'validated' (accept unavailability) | 'rejected' (reject = teacher stays available)
+  const validateAvailability = useCallback(async (ensId, fcode, decision, justification) => {
+    const teacherAvail = availability[ensId] || {};
+    const current = teacherAvail[fcode] || {};
+    const nextClass = {
+      ...current,
+      status: decision,
+      validatedAt: new Date().toISOString(),
+      validationJustification: justification || '',
+    };
+    await db.upsertAvailability(nextClass, user.id, ensId, fcode);
     setAvailability(prev => {
-      const teacherAvail = prev[ensId] || {};
-      const current = teacherAvail[fcode] || {};
-      const nextClass = {
-        ...current,
-        status: decision,
-        validatedAt: new Date().toISOString(),
-        validationJustification: justification || '',
-      };
-      const nextTeacherAvail = { ...teacherAvail, [fcode]: nextClass };
-      const next = { ...prev, [ensId]: nextTeacherAvail };
-      save('pedagotrack_availability', next);
-      addAuditEntry('availability_validated', ensId, { decision, justification, timestamp: nextClass.validatedAt, formation: fcode });
-      return next;
+      const ta = prev[ensId] || {};
+      return { ...prev, [ensId]: { ...ta, [fcode]: nextClass } };
     });
-  }, [addAuditEntry]);
+    addAuditEntry('availability_validated', ensId, { decision, justification, timestamp: nextClass.validatedAt, formation: fcode });
+  }, [user, availability, addAuditEntry]);
 
-  const clearAvailability = useCallback((ensId, fcode) => {
-    setAvailability(prev => {
-      const next = { ...prev };
-      if (!next[ensId]) return prev;
-      if (fcode) {
-        const nextTeacherAvail = { ...next[ensId] };
-        delete nextTeacherAvail[fcode];
-        if (Object.keys(nextTeacherAvail).length > 0) {
-          next[ensId] = nextTeacherAvail;
-        } else {
-          delete next[ensId];
-        }
-      } else {
-        delete next[ensId]; // fallback clear all if needed
-      }
-      save('pedagotrack_availability', next);
-      return next;
-    });
+  const clearAvailability = useCallback(async (ensId, fcode) => {
+    if (fcode) {
+      await db.deleteAvailabilityDB(ensId, fcode);
+    }
+    const avl = await db.fetchAvailability();
+    setAvailability(avl);
   }, []);
 
   // ── §1.2 Temporal coefficients settings ───────────────────────────────────
@@ -1088,92 +927,16 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
   }, []);
 
   // ── Enseignants CRUD ───────────────────────────────────────────────────────
-  const updateEnseignant = useCallback((id, changes) => {
-    setEnsEdits(prev => {
-      const next = { ...prev, [id]: { ...(prev[id] || {}), ...changes } };
-      save('pedagotrack_ens_edits', next);
-      return next;
-    });
+  const updateEnseignant = useCallback(async (id, changes) => {
+    const ens = enseignantsRaw.find(e => e['ID'] === id);
+    if (!ens) return;
+    const updated = { ...ens, ...changes };
+    await db.upsertEnseignant(updated, user.id);
+    setEnseignantsRaw(prev => prev.map(e => e['ID'] === id ? updated : e));
+    addAuditEntry('enseignant_updated', id, { changes });
+  }, [user, enseignantsRaw, addAuditEntry]);
 
-    // Legacy history archiving
-    if (changes['Date dernière visite'] || changes['Note dernière visite /20'] || changes["Verbatim d'observation"]) {
-      setEnsHistory(prev => {
-        const h = prev[id] || [];
-        const date = changes['Date dernière visite'] || '—';
-        const existingIdx = h.findIndex(entry => entry.date === date && date !== '—');
-        const newEntry = {
-          id: existingIdx >= 0 ? h[existingIdx].id : `HIST_${Date.now()}`,
-          date,
-          note: changes['Note dernière visite /20'] || '—',
-          observateur: changes['Observateur'] || '—',
-          verbatim: changes["Verbatim d'observation"] || '',
-          statut: changes['Statut'] || 'Titulaire',
-          recordedAt: new Date().toISOString(),
-        };
-        let nextHistory;
-        if (existingIdx >= 0) {
-          nextHistory = [...h];
-          nextHistory[existingIdx] = { ...nextHistory[existingIdx], ...newEntry };
-        } else if (date !== '—') {
-          nextHistory = [newEntry, ...h];
-        } else {
-          nextHistory = h;
-        }
-        const nextAll = { ...prev, [id]: nextHistory };
-        save('pedagotrack_ens_history', nextAll);
-        return nextAll;
-      });
-    }
-
-    // §2.1 — Sync "Dispo FX" with the per-formation availability system
-    const formationCodes = Object.keys(formations || {});
-    formationCodes.forEach(fcode => {
-      const field = `Dispo ${fcode}`;
-      if (changes[field] !== undefined) {
-        const newDispo = changes[field];
-        setAvailability(prev => {
-          const teacherAvail = prev[id] || {};
-          let nextTeacherAvail = { ...teacherAvail };
-
-          if (newDispo === 'Non') {
-            nextTeacherAvail[fcode] = {
-              declared: true,
-              status: 'validated',
-              declaredAt: new Date().toISOString(),
-              justification: 'Modifié depuis la fiche enseignant',
-              validatedAt: new Date().toISOString(),
-              validationJustification: 'Validation automatique (modification inspecteur)',
-            };
-            addAuditEntry('unavailability_declared', id, { source: 'edit_modal', status: 'validated', formation: fcode });
-          } else if (newDispo === 'En attente') {
-            nextTeacherAvail[fcode] = {
-              declared: true,
-              status: 'pending',
-              declaredAt: new Date().toISOString(),
-              justification: 'Modifié depuis la fiche enseignant',
-              validatedAt: null,
-            };
-            addAuditEntry('unavailability_declared', id, { source: 'edit_modal', status: 'pending', formation: fcode });
-          } else if (newDispo === 'Oui') {
-            delete nextTeacherAvail[fcode];
-          }
-
-          // If teacher is available for all formations, we can optionally remove them from the store completely
-          // or just leave them with an empty object. Let's clean up empty objects.
-          const next = { ...prev };
-          if (Object.keys(nextTeacherAvail).length > 0) {
-            next[id] = nextTeacherAvail;
-          } else {
-            delete next[id];
-          }
-          save('pedagotrack_availability', next);
-          return next;
-        });
-      }
-    });
-  }, [addAuditEntry]);
-
-  const addEnseignant = useCallback((record) => {
+  const addEnseignant = useCallback(async (record) => {
     const newId = `ENS${String(Date.now()).slice(-5)}`;
     const full = {
       'ID': newId,
@@ -1188,387 +951,198 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
       'Observateur': '—',
       'Dispo. confirmée': 'Oui',
       ...record,
-      'ID': newId,
     };
-    setEnsAdded(prev => {
-      const next = [...prev, full];
-      save('pedagotrack_ens_added', next);
-      return next;
-    });
+    await db.upsertEnseignant(full, user.id);
+    setEnseignantsRaw(prev => [...prev, full]);
+    addAuditEntry('enseignant_added', newId, { name: `${full['Prénom']} ${full['Nom']}` });
     return newId;
-  }, []);
+  }, [user, addAuditEntry]);
 
-  const deleteEnseignant = useCallback((id) => {
-    setEnsAdded(prev => {
-      const next = prev.filter(e => e['ID'] !== id);
-      save('pedagotrack_ens_added', next);
-      return next;
-    });
-    if (seedEnseignants.some(e => e['ID'] === id)) {
-      setEnsDeleted(prev => {
-        const next = [...new Set([...prev, id])];
-        save('pedagotrack_ens_deleted', next);
-        return next;
-      });
-    }
-  }, [seedEnseignants]);
+  const deleteEnseignant = useCallback(async (id) => {
+    await db.deleteEnseignantDB(id);
+    setEnseignantsRaw(prev => prev.filter(e => e['ID'] !== id));
+    addAuditEntry('enseignant_deleted', id, {});
+  }, [addAuditEntry]);
 
-  const restoreEnseignant = useCallback((id) => {
-    setEnsDeleted(prev => {
-      const next = prev.filter(x => x !== id);
-      save('pedagotrack_ens_deleted', next);
-      return next;
-    });
+  const restoreEnseignant = useCallback(async (id) => {
+    // Soft delete not really used in DB yet, but could be a field
     addAuditEntry('enseignant_restored', id, { timestamp: new Date().toISOString() });
   }, [addAuditEntry]);
 
-  const resetEnseignantEdits = useCallback((id) => {
-    setEnsEdits(prev => {
-      const next = { ...prev };
-      delete next[id];
-      save('pedagotrack_ens_edits', next);
-      return next;
-    });
+  const resetEnseignantEdits = useCallback(() => {
+    // No-op in DB model
   }, []);
 
-  const addSession = useCallback((record) => {
+  const addSession = useCallback(async (record) => {
     const newId = `SESS${String(Date.now()).slice(-4)}${Math.random().toString(36).substr(2, 3).toUpperCase()}`;
-    const formationId = record.formationId || record['ID Formation'];
-    const catalogItem = Object.values(CATALOGUE_FORMATIONS).find(f => f.id === formationId);
-    
     const full = {
       'ID Session': newId,
       'Statut': 'Planifiée',
       'Nb inscrits': 0,
-      'inscrits': [], 
+      'inscrits': [],
       'Durée (h)': '4 à 5 heures',
-      'logistics': {
-         ...(catalogItem?.requirements || []).reduce((acc, req) => ({ ...acc, [req]: true }), {}),
-         crefocId: 'Kef'
-      },
       ...record,
-      'ID Session': newId,
       'Date ARE (J+42 approx.)': record['Date (Samedi)'] ? calculateAREDate(record['Date (Samedi)']) : '—'
     };
-    setSessAdded(prev => {
-      const next = [...prev, full];
-      save('pedagotrack_sess_added', next);
-      return next;
-    });
+    await db.upsertSession(full, user.id);
+    setSessionsRaw(prev => [...prev, full]);
     addAuditEntry('session_added', newId, { title: full['Titre formation'] });
     return newId;
-  }, [addAuditEntry]);
+  }, [user, addAuditEntry]);
 
-  const deleteSession = useCallback((id) => {
-    setSessAdded(prev => {
-      const next = prev.filter(s => s['ID Session'] !== id);
-      save('pedagotrack_sess_added', next);
-      return next;
-    });
-    if (seedSessions.some(s => s['ID Session'] === id)) {
-      setSessDeleted(prev => {
-        const next = [...new Set([...prev, id])];
-        save('pedagotrack_sess_deleted', next);
-        return next;
-      });
-    }
+  const deleteSession = useCallback(async (id) => {
+    await db.deleteSessionDB(id);
+    setSessionsRaw(prev => prev.filter(s => s['ID Session'] !== id));
     addAuditEntry('session_deleted', id, {});
-  }, [seedSessions, addAuditEntry]);
-
-  const updateSession = useCallback((sessionId, changes) => {
-    setSessEdits(prev => {
-      const existingEdit = prev[sessionId] || {};
-      const nextChanges = { ...changes };
-      
-      // Deep merge CDC into existing edits if provided
-      if (changes.cdc) {
-        nextChanges.cdc = {
-          ...(existingEdit.cdc || {}),
-          ...changes.cdc
-        };
-        addAuditEntry('addie_analysis_update', sessionId, { fields: Object.keys(changes.cdc) });
-      }
-
-      // Auto-update ARE if session date changes
-      if (changes['Date (Samedi)']) {
-        const areDate = calculateAREDate(changes['Date (Samedi)']);
-        nextChanges['Date ARE (J+42 approx.)'] = areDate;
-        // Legacy fields for compat
-        nextChanges['Date ARE (J+10/11 approx.)'] = areDate; 
-        nextChanges['Date ARE (Action-Recherche-Eval.)'] = areDate; 
-      }
-
-      if (changes.inscrits) {
-        nextChanges['Nb inscrits'] = changes.inscrits.length;
-      }
-
-      if (changes.modules) {
-        addAuditEntry('design_sequence_update', sessionId, { count: changes.modules.length });
-      }
-
-      const next = { ...prev, [sessionId]: { ...existingEdit, ...nextChanges } };
-      save('pedagotrack_sessions_edits', next);
-      return next;
-    });
   }, [addAuditEntry]);
 
-  const saveAutopositionnement = useCallback((ensId, scores) => {
+  const updateSession = useCallback(async (sessionId, changes) => {
+    const sess = sessionsRaw.find(s => s['ID Session'] === sessionId);
+    if (!sess) return;
+    const updated = { ...sess, ...changes };
+    if (changes['Date (Samedi)']) {
+      updated['Date ARE (J+42 approx.)'] = calculateAREDate(changes['Date (Samedi)']);
+    }
+    await db.upsertSession(updated, user.id);
+    setSessionsRaw(prev => prev.map(s => s['ID Session'] === sessionId ? updated : s));
+    addAuditEntry('session_updated', sessionId, { changes });
+  }, [user, sessionsRaw, addAuditEntry]);
+
+  const saveAutopositionnement = useCallback(async (ensId, scores) => {
     const entry = {
       id: `AP_${Date.now()}`,
       scores,
+      date: new Date().toISOString().split('T')[0],
       recordedAt: new Date().toISOString(),
     };
+    await db.insertAutoposManual(entry, user.id, ensId);
     setAutoposManual(prev => {
       const h = prev[ensId] || [];
-      const next = { ...prev, [ensId]: [entry, ...h] };
-      save('pedagotrack_autopos_manual', next);
-      return next;
+      return { ...prev, [ensId]: [entry, ...h] };
     });
     addAuditEntry('autopositionnement_recorded', ensId, entry);
-  }, [addAuditEntry]);
+  }, [user, addAuditEntry]);
 
-  const deleteAutopositionnement = useCallback((ensId, entryId) => {
+  const deleteAutopositionnement = useCallback(async (ensId, entryId) => {
+    await db.deleteAutoposManualDB(entryId);
     setAutoposManual(prev => {
       const h = prev[ensId] || [];
-      const next = { ...prev, [ensId]: h.filter(e => e.id !== entryId) };
-      save('pedagotrack_autopos_manual', next);
-      return next;
+      return { ...prev, [ensId]: h.filter(e => e.id !== entryId) };
     });
     addAuditEntry('autopositionnement_deleted', ensId, { entryId });
   }, [addAuditEntry]);
 
   // ── Kirkpatrick Operations ────────────────────────────────────────────────
-  const updateKirkpatrick = useCallback((ensId, formationId, level, data) => {
-    // level: 'N1', 'N2', or 'N3'
-    const key = `${ensId}_${formationId}_${level}`;
-    setKpEdits(prev => {
-      const next = { ...prev, [key]: { ...(prev[key] || {}), ...data } };
-      save('pedagotrack_kp_edits', next);
-      return next;
-    });
+  const updateKirkpatrick = useCallback(async (ensId, formationId, level, data) => {
+    await db.upsertKirkpatrickEdit(ensId, formationId, level, data, user.id);
+    setKpEdits(prev => ({
+      ...prev,
+      [`${ensId}_${formationId}_${level}`]: { ...(prev[`${ensId}_${formationId}_${level}`] || {}), ...data }
+    }));
     addAuditEntry('kirkpatrick_updated', ensId, { formationId, level, data });
-  }, [addAuditEntry]);
+  }, [user, addAuditEntry]);
 
-  const resetKirkpatrick = useCallback((ensId, formationId, level) => {
-    const key = `${ensId}_${formationId}_${level}`;
+  const resetKirkpatrick = useCallback(async (ensId, formationId, level) => {
+    await db.deleteKirkpatrickEdit(ensId, formationId, level);
     setKpEdits(prev => {
       const next = { ...prev };
-      delete next[key];
-      save('pedagotrack_kp_edits', next);
+      delete next[`${ensId}_${formationId}_${level}`];
       return next;
     });
     addAuditEntry('kirkpatrick_reset', ensId, { formationId, level });
   }, [addAuditEntry]);
 
   // ── Formations CRUD ────────────────────────────────────────────────────────
-  const addFormation = useCallback((formation) => {
-    setFormations(prev => {
-      const id = formation.id || `F${Object.keys(prev).length + 1}`;
-      const next = { ...prev, [id]: { ...formation, id, objectifs: formation.objectifs || [], status: 'En attente' } };
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, []);
+  const addFormation = useCallback(async (formation) => {
+    const id = formation.id || `F${Object.keys(formations).length + 1}`;
+    const full = { ...formation, id, objectifs: formation.objectifs || [], status: 'En attente' };
+    await db.upsertFormation(full, user.id);
+    setFormations(prev => ({ ...prev, [id]: full }));
+  }, [user, formations]);
 
-  const deleteFormation = useCallback((id) => {
+  const deleteFormation = useCallback(async (id) => {
+    await db.deleteFormationDB(id);
     setFormations(prev => {
       const next = { ...prev };
       delete next[id];
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, []);
-  const updateFormation = useCallback((formationId, changes) => {
-    setFormations(prev => {
-      const existing = prev[formationId] || {};
-      const nextChanges = { ...changes };
-
-      // Deep merge CDC for Master Design
-      if (changes.cdc) {
-        nextChanges.cdc = {
-          ...(existing.cdc || {}),
-          ...changes.cdc
-        };
-        addAuditEntry('formation_master_analysis_update', formationId, { fields: Object.keys(changes.cdc) });
-      }
-
-      if (changes.modules) {
-        addAuditEntry('formation_master_design_update', formationId, { count: changes.modules.length });
-      }
-
-      const next = { ...prev, [formationId]: { ...existing, ...nextChanges } };
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, [addAuditEntry]);
-
-  const updateTargetScore = useCallback((formationId, compId, score) => {
-    setFormations(prev => {
-      const form = prev[formationId];
-      const nextTargets = { ...(form.targetScores || {}), [compId]: score };
-      const next = { ...prev, [formationId]: { ...form, targetScores: nextTargets } };
-      save('pedagotrack_formations', next);
       return next;
     });
   }, []);
 
-  const updateObjectif = useCallback((formationId, opIndex, changes) => {
-    setFormations(prev => {
-      const form = prev[formationId];
-      const newObjectifs = form.objectifs.map((op, i) => i === opIndex ? { ...op, ...changes } : op);
-      const next = { ...prev, [formationId]: { ...form, objectifs: newObjectifs } };
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, []);
+  const updateFormation = useCallback(async (formationId, changes) => {
+    const existing = formations[formationId] || {};
+    const updated = { ...existing, ...changes };
+    await db.upsertFormation(updated, user.id);
+    setFormations(prev => ({ ...prev, [formationId]: updated }));
+    addAuditEntry('formation_updated', formationId, { changes });
+  }, [user, formations, addAuditEntry]);
 
-  const addObjectif = useCallback((formationId, libelle) => {
-    setFormations(prev => {
-      const form = prev[formationId];
-      const id = `OP${form.objectifs.length + 1}`;
-      const newObjectifs = [...form.objectifs, { id, libelle }];
-      const next = { ...prev, [formationId]: { ...form, objectifs: newObjectifs } };
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, []);
+  const updateCompetence = useCallback(async (code, label) => {
+    await db.upsertCompetence(code, label, user.id);
+    setCompetences(prev => ({ ...prev, [code]: label }));
+  }, [user]);
 
-  const deleteObjectif = useCallback((formationId, opIndex) => {
-    setFormations(prev => {
-      const form = prev[formationId];
-      const newObjectifs = form.objectifs.filter((_, i) => i !== opIndex);
-      const next = { ...prev, [formationId]: { ...form, objectifs: newObjectifs } };
-      save('pedagotrack_formations', next);
-      return next;
-    });
-  }, []);
+  const addCompetence = useCallback(async (code, label) => {
+    await db.upsertCompetence(code, label, user.id);
+    setCompetences(prev => ({ ...prev, [code]: label }));
+    setGlobalTargetedComps(prev => [...new Set([...prev, code])]);
+  }, [user]);
 
-  const updateCompetence = useCallback((code, label) => {
-    setCompetences(prev => {
-      const next = { ...prev, [code]: label };
-      save('pedagotrack_competences', next);
-      return next;
-    });
-  }, []);
-
-  const addCompetence = useCallback((code, label) => {
-    setCompetences(prev => {
-      const next = { ...prev, [code]: label };
-      save('pedagotrack_competences', next);
-      return next;
-    });
-    setGlobalTargetedComps(prev => {
-      if (prev.includes(code)) return prev;
-      const next = [...prev, code];
-      save('pedagotrack_global_targets', next);
-      return next;
-    });
-  }, []);
-
-  const deleteCompetence = useCallback((code) => {
+  const deleteCompetence = useCallback(async (code) => {
+    await db.deleteCompetenceDB(code);
     setCompetences(prev => {
       const next = { ...prev };
       delete next[code];
-      save('pedagotrack_competences', next);
       return next;
     });
-    setGlobalTargetedComps(prev => {
-      const next = prev.filter(c => c !== code);
-      save('pedagotrack_global_targets', next);
-      return next;
-    });
+    setGlobalTargetedComps(prev => prev.filter(c => c !== code));
   }, []);
 
-  const updateGlobalTargetedComps = useCallback((comps) => {
+  const updateGlobalTargetedComps = useCallback(async (comps) => {
+    await db.upsertUserSetting('pedagotrack_global_targets', comps, user.id);
     setGlobalTargetedComps(comps);
-    save('pedagotrack_global_targets', comps);
-  }, []);
+  }, [user]);
 
-  const updateRiskThresholds = useCallback((newThresholds) => {
-    setRiskThresholds(prev => {
-      const next = { ...prev, ...newThresholds };
-      save('pedagotrack_risk_thresholds', next);
-      return next;
-    });
-  }, []);
+  const updateRiskThresholds = useCallback(async (newThresholds) => {
+    const next = { ...riskThresholds, ...newThresholds };
+    await db.upsertUserSetting('pedagotrack_risk_thresholds', next, user.id);
+    setRiskThresholds(next);
+  }, [user, riskThresholds]);
 
   // ── Crefocs CRUD ───────────────────────────────────────────────────────────
-  const updateCrefoc = useCallback((circo, field, value) => {
-    setCrefocs(prev => {
-      const next = { ...prev, [circo]: { ...prev[circo], [field]: value } };
-      save('pedagotrack_crefocs', next);
-      return next;
-    });
-  }, []);
+  const updateCrefoc = useCallback(async (circo, field, value) => {
+    const next = { ...crefocs[circo], [field]: value };
+    await db.upsertCrefoc(circo, next, user.id);
+    setCrefocs(prev => ({ ...prev, [circo]: next }));
+  }, [user, crefocs]);
 
-  const saveAllCrefocs = useCallback((data) => {
-    setCrefocs(data);
-    save('pedagotrack_crefocs', data);
-  }, []);
+  const addCrefoc = useCallback(async (circo, data) => {
+    const next = { ...data, confirmed: false, logistics: CREFOC_LOGISTICS_DEFAULT, places: 20 };
+    await db.upsertCrefoc(circo, next, user.id);
+    setCrefocs(prev => ({ ...prev, [circo]: next }));
+  }, [user]);
 
-  const addCrefoc = useCallback((circo, data) => {
-    setCrefocs(prev => {
-      const next = { ...prev, [circo]: { ...data, confirmed: false, logistics: CREFOC_LOGISTICS_DEFAULT, places: 20 } };
-      save('pedagotrack_crefocs', next);
-      return next;
-    });
-  }, []);
-
-  const deleteCrefoc = useCallback((circo) => {
+  const deleteCrefoc = useCallback(async (circo) => {
+    await db.deleteCrefocDB(circo);
     setCrefocs(prev => {
       const next = { ...prev };
       delete next[circo];
-      save('pedagotrack_crefocs', next);
       return next;
     });
-  }, []);
-
-  // ── Reset all data ─────────────────────────────────────────────────────────
-  const resetAll = useCallback(() => {
-    [
-      'pedagotrack_ens_edits', 'pedagotrack_ens_added', 'pedagotrack_ens_deleted',
-      'pedagotrack_sessions_edits', 'pedagotrack_sess_added', 'pedagotrack_sess_deleted',
-      'pedagotrack_formations', 'pedagotrack_competences',
-      'pedagotrack_crefocs', 'pedagotrack_ens_history',
-      'pedagotrack_visits', 'pedagotrack_overrides', 'pedagotrack_availability',
-      'pedagotrack_audit_trail', 'pedagotrack_temporal_coeffs', 'pedagotrack_group_weights',
-      'pedagotrack_global_criteria', 'pedagotrack_formation_filter',
-      'pedagotrack_needs_decision', 'pedagotrack_needs_weights',
-    ].forEach(k => localStorage.removeItem(k));
-    setEnsEdits({}); setEnsAdded([]); setEnsDeleted([]); setEnsHistory({});
-    setSessEdits({}); setSessAdded([]); setSessDeleted([]);
-    setFormations(FORMATIONS_DEFAULT); setCompetences(COMPETENCES_DEFAULT); setCrefocs(CREFOCS_DEFAULT);
-    setVisits({}); setOverrides({}); setAvailability({}); setAuditTrail([]);
-    setTemporalCoeffs(TEMPORAL_COEFFICIENTS_DEFAULT);
-    setGroupWeights(GROUP_WEIGHTS_DEFAULT);
-    setGlobalCriteria(GLOBAL_CRITERIA_DEFAULT);
-    setFormationFilterState('');
-    setNeedsDecision(null);
-    setNeedsWeights({ deficit: 0.40, studentImpact: 0.35, feasibility: 0.25 });
   }, []);
 
   // ── Stats for admin banner ─────────────────────────────────────────────────
   const pendingChanges = useMemo(() => ({
-    enseignants: Object.keys(ensEdits).length + ensAdded.length + ensDeleted.length,
-    sessions: Object.keys(sessEdits).length,
+    enseignants: 0,
+    sessions: 0,
     formations: 0,
     overrides: Object.values(overrides).filter(o => o.active).length,
-    pendingAvailability: Object.values(availability).filter(a => a.status === 'pending').length,
-  }), [ensEdits, ensAdded, ensDeleted, sessEdits, overrides, availability]);
-
+    pendingAvailability: Object.values(availability).flatMap(Object.values).filter(a => a.status === 'pending').length,
+  }), [overrides, availability]);
 
   const getPriorityList = useCallback((fId) => {
-    // Collect all data needed by engine
-    const base = seedEnseignants
-      .filter(e => !ensDeleted.includes(e['ID']))
-      .map(e => {
-        const edits = ensEdits[e['ID']];
-        return edits ? { ...e, ...edits } : e;
-      });
-    const withAdded = [...base, ...ensAdded];
-
     return buildPriorityList(
-      withAdded,
+      enseignantsRaw,
       seedAutopos,
       visits,
       overrides,
@@ -1586,20 +1160,15 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
       crefocs
     );
   }, [
-    seedEnseignants, ensEdits, ensAdded, ensDeleted,
-    seedAutopos, visits, overrides, availability,
+    enseignantsRaw, seedAutopos, visits, overrides, availability,
     temporalCoeffs, groupWeights, globalCriteria,
     formations, globalTargetedComps, autoposManual, crefocs
   ]);
 
   const getSmartSet = useCallback((fId, circo) => {
     if (!fId || !circo) return [];
-    
-    // Use the engine to get priority list for this formation
     const { list } = getPriorityList(fId);
     const capacity = crefocs[circo]?.places || 20;
-
-    // Strictly home circo + available + sorted by rank
     return list
       .filter(e => e['Circonscription'] === circo && e.availabilityStatus !== 'unavailable')
       .slice(0, capacity)
@@ -1607,6 +1176,10 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
   }, [getPriorityList, crefocs]);
 
   return {
+    // Meta
+    loading,
+    refresh,
+
     // Data
     enseignants,
     isUnconfiguredFormation,
@@ -1619,11 +1192,10 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
     addEnseignant,
     deleteEnseignant,
     restoreEnseignant,
-    confirmTitularisation: (ensId) => {
-      updateEnseignant(ensId, { 'Statut': 'Titulaire' });
+    confirmTitularisation: async (ensId) => {
+      await updateEnseignant(ensId, { 'Statut': 'Titulaire' });
       addAuditEntry('titularisation_confirmed', ensId, {});
     },
-    ensDeleted,
     resetEnseignantEdits,
     ensHistory,
 
@@ -1637,16 +1209,11 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
     updateCrefoc,
     addCrefoc,
     deleteCrefoc,
-    saveAllCrefocs,
 
     // Formations / competences ops
     updateFormation,
     addFormation,
     deleteFormation,
-    updateTargetScore,
-    updateObjectif,
-    addObjectif,
-    deleteObjectif,
     updateCompetence,
     addCompetence,
     deleteCompetence,
@@ -1655,25 +1222,20 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
 
     // Referential (Global Catalogue)
     referential,
-    addReferentialItem: (item) => {
-      setReferential(prev => {
-        const next = { ...prev, [item.id]: item };
-        save('pedagotrack_referential', next);
-        return next;
-      });
+    addReferentialItem: async (item) => {
+      await db.upsertReferential(item, user.id);
+      setReferential(prev => ({ ...prev, [item.id]: item }));
     },
-    updateReferentialItem: (id, partial) => {
-      setReferential(prev => {
-        const next = { ...prev, [id]: { ...prev[id], ...partial } };
-        save('pedagotrack_referential', next);
-        return next;
-      });
+    updateReferentialItem: async (id, partial) => {
+      const next = { ...referential[id], ...partial };
+      await db.upsertReferential(next, user.id);
+      setReferential(prev => ({ ...prev, [id]: next }));
     },
-    deleteReferentialItem: (id) => {
+    deleteReferentialItem: async (id) => {
+      await db.deleteReferentialDB(id);
       setReferential(prev => {
         const next = { ...prev };
         delete next[id];
-        save('pedagotrack_referential', next);
         return next;
       });
     },
@@ -1731,9 +1293,9 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
     riskThresholds,
     updateRiskThresholds,
     strategicMode,
-    updateStrategicMode: (val) => {
+    updateStrategicMode: async (val) => {
+      await db.upsertUserSetting('pedagotrack_strategic_mode', val, user.id);
       setStrategicMode(val);
-      save('pedagotrack_strategic_mode', val);
     },
 
     // Kirkpatrick
@@ -1743,7 +1305,6 @@ export function useDataStore(seedEnseignants, seedSessions, seedAutopos = []) {
     resetKirkpatrick,
 
     // Meta
-    resetAll,
     pendingChanges,
     hasEdits: pendingChanges.enseignants + pendingChanges.sessions > 0,
   };

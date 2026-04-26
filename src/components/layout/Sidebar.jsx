@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
-import { Home, Users, Calendar, BarChart2, Bell, Settings, X, Compass } from 'lucide-react';
+import { Home, Users, Calendar, BarChart2, Bell, Settings, X, Compass, ShieldCheck, LogOut } from 'lucide-react';
 import { AlertBadge } from '../ui/AlertBadge';
+import { useAuth } from '../../hooks/useAuth';
 
 const NAV_ITEMS = [
   { path: '/', icon: Home, label: "Vue d'ensemble", exact: true },
@@ -13,6 +14,8 @@ const NAV_ITEMS = [
 ];
 
 export function Sidebar({ alertCount = 0, open, onClose }) {
+  const { user, profile, isSuperAdmin, signOut } = useAuth();
+
   return (
     <>
       {/* Mobile overlay */}
@@ -53,14 +56,23 @@ export function Sidebar({ alertCount = 0, open, onClose }) {
               <X size={18} />
             </button>
           </div>
-          <p className="text-xs text-blue-200 mt-3 leading-relaxed">
-            Formateur : <span className="text-white font-medium">Mohamed Amir Beldi</span>
-          </p>
-          <p className="text-xs text-blue-300">Kef · Béja · Jendouba</p>
+          <div className="mt-4 flex items-center gap-3 p-2 bg-white/5 rounded-xl border border-white/10">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-xs font-bold ring-2 ring-white/20">
+              {user?.email?.[0].toUpperCase() || 'U'}
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-blue-400 uppercase font-bold tracking-wider leading-none mb-1">
+                {isSuperAdmin ? 'Super Admin' : 'Inspecteur'}
+              </p>
+              <p className="text-xs font-medium truncate text-white leading-tight">
+                {profile?.full_name || user?.email?.split('@')[0] || 'Utilisateur'}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 py-4 px-3">
+        <nav className="flex-1 py-4 px-3 overflow-y-auto">
           <ul className="space-y-1">
             {NAV_ITEMS.map(({ path, icon: Icon, label, exact, alertCount: showAlert }) => (
               <li key={path}>
@@ -71,7 +83,7 @@ export function Sidebar({ alertCount = 0, open, onClose }) {
                   className={({ isActive }) =>
                     `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 ${
                       isActive
-                        ? 'bg-[#2E75B6] text-white font-semibold'
+                        ? 'bg-[#2E75B6] text-white font-semibold shadow-inner'
                         : 'text-blue-200 hover:bg-white/10 hover:text-white'
                     }`
                   }
@@ -84,14 +96,43 @@ export function Sidebar({ alertCount = 0, open, onClose }) {
                 </NavLink>
               </li>
             ))}
+
+            {isSuperAdmin && (
+              <li className="pt-2 mt-2 border-t border-white/10">
+                <p className="px-3 mb-2 text-[10px] font-bold text-blue-400 uppercase tracking-widest">Administration</p>
+                <NavLink
+                  to="/admin/users"
+                  onClick={onClose}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 ${
+                      isActive
+                        ? 'bg-[#2E75B6] text-white font-semibold'
+                        : 'text-blue-200 hover:bg-white/10 hover:text-white'
+                    }`
+                  }
+                >
+                  <ShieldCheck size={17} className="flex-shrink-0" />
+                  <span className="flex-1 leading-tight">Utilisateurs</span>
+                </NavLink>
+              </li>
+            )}
           </ul>
         </nav>
 
         {/* Footer */}
-        <div className="px-5 py-4 border-t border-white/10 text-xs text-blue-300">
-          <p>Discipline : Italien</p>
-          <p>3ème &amp; 4ème année secondaire</p>
-          <p className="mt-1 text-blue-400">Modèle ADDIE · Kirkpatrick</p>
+        <div className="px-3 py-4 border-t border-white/10">
+          <button
+            onClick={() => signOut()}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-all duration-150 group"
+          >
+            <LogOut size={17} className="group-hover:translate-x-0.5 transition-transform" />
+            <span className="font-medium">Déconnexion</span>
+          </button>
+          
+          <div className="mt-4 px-2 text-[10px] text-blue-400/60 leading-tight">
+            <p>© 2026 PedagoTrack</p>
+            <p>Production Environment v3.0</p>
+          </div>
         </div>
       </aside>
     </>
