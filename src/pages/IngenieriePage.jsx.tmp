@@ -1,0 +1,742 @@
+import { useState, useMemo, useEffect } from 'react';
+import { 
+  Compass, Layout, ClipboardList, PenTool, 
+  Trash2, Plus, CheckCircle2, ChevronRight,
+  BookOpen, Layers, Settings, FileText, Info,
+  Save, AlertCircle, Sparkles, FolderKanban,
+  CheckSquare, MessageSquare, History, Rocket,
+  Target, Zap, Flag, ChevronDown, ChevronUp,
+  ExternalLink, Clock, User, CheckCircle, Users, X,
+  BarChart, PieChart, TrendingUp, Award, Copy,
+  ArrowRight, Filter, Eye, Wand2, Lightbulb,
+  MousePointer2, HardDrive, Cpu, Database, Activity,
+  GaugeCircle, ShieldCheck, ShieldAlert, MapPin
+} from 'lucide-react';
+import { SessionEditModal } from '../components/features/sessions/SessionEditModal';
+
+export function IngenieriePage({ data, store }) {
+  const allSessions = store.sessions || [];
+  const formationsList = Object.values(store.formations);
+  
+  const [selectedFormationId, setSelectedFormationId] = useState(formationsList[0]?.id || '');
+  const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [activeTab, setActiveTab] = useState('analysis');
+  const [expandedModule, setExpandedModule] = useState(null);
+  const [showMasterRef, setShowMasterRef] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [isAddingSession, setIsAddingSession] = useState(false);
+
+  // --- Dynamic Filtering ---
+  const filteredSessions = useMemo(() => {
+    return allSessions.filter(s => s.Formation === selectedFormationId);
+  }, [allSessions, selectedFormationId]);
+
+  useEffect(() => {
+    if (filteredSessions.length > 0 && !selectedSessionId) {
+      setSelectedSessionId(filteredSessions[0]['ID Session']);
+    }
+  }, [selectedFormationId, filteredSessions]);
+
+  const session = allSessions.find(s => s['ID Session'] === selectedSessionId);
+  const formation = store.formations[selectedFormationId];
+  
+  // --- HELPER: Placeholder session for template mode ---
+  const displaySession = session || {
+    'ID Session': 'TEMPLATE_MODE',
+    cdc: { draft: '' },
+    modules: []
+  };
+
+  // --- HELPER: Normalize Venue/Circo Name ---
+  const normalizeCirco = (str) => {
+    if (!str) return 'National';
+    const s = str.toLowerCase();
+    if (s.includes('kef')) return 'Kef';
+    if (s.includes('béja') || s.includes('beja')) return 'Béja';
+    if (s.includes('jendouba')) return 'Jendouba';
+    return str;
+  };
+
+  const currentCirco = useMemo(() => normalizeCirco(displaySession?.Lieu || displaySession?.Circonscription), [displaySession]);
+
+  // --- ADVANCED ANALYTICS (Phase 2) ---
+  
+  const participants = useMemo(() => {
+    if (!displaySession || !displaySession.inscrits || displaySession.inscrits.length === 0) {
+      // FALLBACK Mode: Use all teachers from the same Circonscription as a "Territorial Baseline"
+      return store.enseignants.filter(e => e.Circonscription === currentCirco);
+    }
+    return store.enseignants.filter(e => displaySession.inscrits.includes(e.ID));
+  }, [displaySession, store.enseignants, currentCirco]);
+
+  const isTerritorialMode = !displaySession?.inscrits || displaySession.inscrits.length === 0;
+
+  // Specific Skills Stats (Unified 60/40 logic)
+  const skillsInsight = useMemo(() => {
+    if (!formation || participants.length === 0) return null;
+    const comps = formation.targetedComps || [];
+    
+    // Weights from store settings (default 0.6 / 0.4)
+    const wObs = store.groupWeights?.obs ?? 0.60;
+    const wAuto = store.groupWeights?.autopos ?? 0.40;
+
+    const stats = comps.map(compId => {
+      // 1. Group Mixed Average (Current Session)
+      const groupMixedScores = participants.map(p => {
+        const auto = p.scores?.[compId] || p.avgAutoposScore || 3;
+        const obs = p.temporalObsScore;
+        if (obs === null) return auto;
+        return (obs * wObs) + (auto * wAuto);
+      });
+      const groupAvg = groupMixedScores.reduce((a, b) => a + b, 0) / participants.length;
+      
+      // 2. Evidence Level
+      const withObs = participants.filter(p => p.temporalObsScore !== null).length;
+      const evidencePct = Math.round((withObs / participants.length) * 100);
+
+      // 3. TARGET-BASED Benchmarking (The user-defined goal)
+      const targetScore = formation?.targetScores?.[compId] || 4.0;
+      const gapPct = Math.round(((groupAvg - targetScore) / targetScore) * 100);
+
+      return {
+        id: compId,
+        label: store.competences[compId] || compId,
+        groupAvg: Math.round(groupAvg * 10) / 10,
+        targetScore: Math.round(targetScore * 10) / 10,
+        gapPct,
+        evidencePct,
+        isVerified: evidencePct >= 50,
+        isWeakPoint: gapPct < 0
+      };
+    });
+
+    const primaryGap = stats.sort((a, b) => a.gapPct - b.gapPct)[0];
+    const evidenceLabel = primaryGap?.isVerified ? "Déficit observé (confirmé par inspection)" : "Besoin ressenti (auto-déclaré)";
+
+    return {
+      stats,
+      summary: primaryGap && primaryGap.gapPct < 0 
+        ? `${evidenceLabel} : Le groupe est à ${Math.abs(primaryGap.gapPct)}% sous l'objectif de maîtrise (${primaryGap.targetScore}) sur la compétence ${primaryGap.label}.`
+        : `Objectifs atteints : Le groupe dépasse la cible de maîtrise fixée pour ce programme.`
+    };
+  }, [formation, participants, store.competences, store.groupWeights]);
+
+  // Seniority Stats
+  const seniorityInsight = useMemo(() => {
+    if (participants.length === 0) return null;
+    const stagiaires = participants.filter(p => p.Statut === 'Stagiaire').length;
+    const titulaires = participants.length - stagiaires;
+    
+    // Distribution percentages
+    const stagiairePct = Math.round((stagiaires / participants.length) * 100);
+    
+    return {
+      stagiaires,
+      titulaires,
+      stagiairePct,
+      summary: `Profil : ${stagiairePct}% de Stagiaires. ${stagiairePct > 70 ? 'Besoin de guidage méthodologique fort.' : 'Groupe aux profils mixtes.'}`
+    };
+  }, [participants]);
+
+  // Pillar 3 Insight: Logistics
+  const logisticsInsight = useMemo(() => {
+    if (!displaySession || !currentCirco) return null;
+    const crefoc = store.crefocs[currentCirco];
+    if (!crefoc) return null;
+
+    const items = Object.entries(crefoc.logistics || {})
+      .filter(([_, val]) => val === true)
+      .map(([key, _]) => key.charAt(0).toUpperCase() + key.slice(1));
+    
+    return {
+      lieu: crefoc.nom || currentCirco,
+      items,
+      summary: `Infrastructures : ${crefoc.nom}. Équipements disponibles : ${items.join(', ')}.`
+    };
+  }, [displaySession, store.crefocs, currentCirco]);
+
+  const handleUpdate = (changes) => {
+    if (selectedSessionId) {
+      store.updateSession(selectedSessionId, changes);
+    }
+  };
+
+  const handleQuickCreate = () => {
+    setIsAddingSession(true);
+  };
+
+  const handleSaveNewSession = (newSessionData) => {
+    const newId = store.addSession(newSessionData);
+    setSelectedSessionId(newId);
+    setIsAddingSession(false);
+    setActiveTab('analysis'); 
+  };
+
+  const handleGenerateSMART = () => {
+    if (!skillsInsight || skillsInsight.stats.length === 0) return;
+    
+    // Find the 2 biggest gaps
+    const weakPoints = skillsInsight.stats
+      .filter(s => s.gapPct < 0)
+      .sort((a, b) => a.gapPct - b.gapPct)
+      .slice(0, 2);
+
+    const generated = weakPoints.map(wp => ({
+      text: `D'ici la fin de la session, 80% des participants seront capables de maîtriser la compétence "${wp.label}" pour atteindre l'objectif de ${wp.targetScore}/5 (Écart actuel : ${Math.abs(wp.gapPct)}%).`,
+      smart: []
+    }));
+
+    // Parse current
+    let currentRaw = displaySession.cdc?.objectifs || '';
+    let current = [];
+    try {
+       current = JSON.parse(currentRaw);
+       if (!Array.isArray(current)) throw new Error();
+    } catch(e) {
+       // Migration from legacy text
+       if (currentRaw) {
+          current = currentRaw.split('\n\n').filter(Boolean).map(t => ({ text: t, smart: [] }));
+       }
+    }
+
+    handleUpdate({ cdc: { objectifs: JSON.stringify([...current, ...generated]) } });
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
+  };
+
+  const handleGenerateDraft = () => {
+    const cdc = displaySession.cdc || {};
+    const besoins = cdc.besoins || 'Non renseigné.';
+    const publicTarget = cdc.public || 'Non renseigné.';
+    const contraintes = cdc.contraintes || 'Non renseigné.';
+    const objectifsRaw = cdc.objectifs || '';
+    let objectifsFormatted = 'Non renseigné.';
+    try {
+       const objs = JSON.parse(objectifsRaw);
+       if (Array.isArray(objs)) {
+          objectifsFormatted = objs.map((o, i) => `${i+1}. ${o.text} [Validé SMART : ${o.smart?.join('-') || 'Aucun criteria'}]`).join('\n');
+       } else {
+          objectifsFormatted = objectifsRaw;
+       }
+    } catch(e) {
+       objectifsFormatted = objectifsRaw;
+    }
+
+    const draft = `
+INTRODUCTION : PHASE D'ANALYSE (DIAGNOSTIC)
+Ce document résume le diagnostic pédagogique réalisé pour cette session.
+
+1. ANALYSE DES BESOINS (L'écart de performance)
+${besoins}
+
+2. ANALYSE DU PUBLIC (Apprenants & Motivation)
+${publicTarget}
+
+3. ANALYSE DES CONTRAINTES (Environnement & Ressources)
+${contraintes}
+
+4. OBJECTIFS PÉDAGOGIQUES (Cibles SMART)
+${objectifsFormatted}
+
+CONCLUSION
+Ce diagnostic validé sert de base contractuelle et pédagogique pour la phase de Design (Séquençage).
+`.trim();
+    
+    handleUpdate({ cdc: { draft } });
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
+  };
+
+  // --- DISTRICT INSIGHT (User Request) ---
+  const districtInsight = useMemo(() => {
+    if (!displaySession || !displaySession.Lieu || !formation) return null;
+    const circo = displaySession.Lieu;
+    const comps = formation.targetedComps || [];
+    
+    // All teachers in this district
+    const districtTeachers = store.enseignants.filter(e => e['Circonscription'] === circo);
+    if (districtTeachers.length === 0) return null;
+
+    const wObs = store.groupWeights?.obs ?? 0.60;
+    const wAuto = store.groupWeights?.autopos ?? 0.40;
+
+    const mixedScores = districtTeachers.map(p => {
+      const auto = p.avgAutoposScore || 3;
+      const obs = p.temporalObsScore;
+      return obs === null ? auto : (obs * wObs) + (auto * wAuto);
+    });
+
+    const districtAvg = mixedScores.reduce((a, b) => a + b, 0) / districtTeachers.length;
+
+    return {
+      circo,
+      count: districtTeachers.length,
+      avg: Math.round(districtAvg * 10) / 10
+    };
+  }, [displaySession, formation, store.enseignants, store.groupWeights]);
+
+  // --- Handlers for Design Tab ---
+  const handleAddModule = () => {
+    const currentModules = displaySession.modules || [];
+    const newModule = {
+      id: `MOD_${Date.now()}`,
+      title: `Nouveau Module ${currentModules.length + 1}`,
+      content: ''
+    };
+    handleUpdate({ modules: [...currentModules, newModule] });
+  };
+
+  const handleDeleteModule = (modId) => {
+    const currentModules = displaySession.modules || [];
+    handleUpdate({ modules: currentModules.filter(m => m.id !== modId) });
+  };
+
+  return (
+    <div className="p-8 space-y-10 max-w-7xl mx-auto pb-32">
+       {/* Global Mode Alert */}
+       {!session && (
+         <div className="bg-orange-50 border-2 border-orange-100 rounded-[32px] p-8 flex items-center justify-between shadow-sm animate-in fade-in slide-in-from-top-4 duration-500">
+            <div className="flex items-center gap-6">
+               <div className="w-14 h-14 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center shadow-inner">
+                  <AlertCircle size={28} />
+               </div>
+               <div>
+                  <h3 className="text-xl font-black text-orange-900">Mode Analyse Globale (Académie)</h3>
+                  <p className="text-orange-700/70 font-bold text-sm">Aucune session active n'est sélectionnée. Les statistiques affichées concernent l'ensemble de l'académie.</p>
+               </div>
+            </div>
+            <button 
+              onClick={handleQuickCreate}
+              className="px-8 py-4 bg-orange-600 text-white rounded-3xl text-sm font-black shadow-xl shadow-orange-200 hover:scale-105 active:scale-95 transition-all"
+            >
+               Créer une Session
+            </button>
+         </div>
+       )}
+
+       {/* Header with Glassmorphism */}
+       <div className="bg-white/80 backdrop-blur-xl rounded-[40px] p-10 border border-white shadow-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-8 relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none">
+          <Compass size={180} className="text-[#1F3864]" />
+        </div>
+        
+        <div className="relative z-10 space-y-6">
+          <div className="flex items-center gap-4">
+             <div className="p-4 bg-blue-50 text-blue-600 rounded-[24px]">
+                <Compass size={32} />
+             </div>
+             <div>
+                <h1 className="text-3xl font-black text-[#1F3864] italic">ADDIE Studio</h1>
+                <p className="text-gray-400 font-bold uppercase text-[9px] tracking-widest mt-1">Ingénierie de Session : {selectedSessionId}</p>
+             </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+             <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-4">Programme</label>
+                <select value={selectedFormationId} onChange={(e) => setSelectedFormationId(e.target.value)} className="w-full bg-gray-50 border-2 border-transparent focus:border-blue-100 rounded-[20px] px-6 py-4 text-sm font-black text-[#1F3864] outline-none">
+                  {formationsList.map(f => <option key={f.id} value={f.id}>{f.libelle}</option>)}
+                </select>
+             </div>
+             <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-4">Session active</label>
+                <select value={selectedSessionId} onChange={(e) => setSelectedSessionId(e.target.value)} className="w-full bg-gray-50 border-2 border-transparent focus:border-orange-100 rounded-[20px] px-6 py-4 text-sm font-black text-[#1F3864] outline-none">
+                  {filteredSessions.map(s => <option key={s['ID Session']} value={s['ID Session']}>{s['ID Session']} — {s.Lieu}</option>)}
+                </select>
+             </div>
+          </div>
+        </div>
+
+        <div className="relative z-10">
+           <button onClick={() => setShowMasterRef(!showMasterRef)} className={`flex items-center gap-3 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${showMasterRef ? 'bg-[#1F3864] text-white' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>
+              <Eye size={14} /> {showMasterRef ? 'Référence Master visible' : 'Référence Master cachée'}
+           </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex p-1.5 bg-gray-100/50 rounded-[28px] w-full max-w-4xl mx-auto border border-white/50 backdrop-blur-sm shadow-inner">
+        {[
+          { id: 'analysis', label: 'Analyse', icon: ClipboardList },
+          { id: 'design', label: 'Design', icon: Layout },
+          { id: 'development', label: 'Développement', icon: PenTool },
+          { id: 'implementation', label: 'Implémentation', icon: Rocket },
+          { id: 'evaluation', label: 'Évaluation', icon: BarChart },
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2.5 px-4 py-3.5 rounded-[22px] text-xs font-black uppercase tracking-tighter transition-all ${activeTab === tab.id ? 'bg-white text-[#1F3864] shadow-lg scale-105 ring-1 ring-black/5' : 'text-gray-400 opacity-60 hover:opacity-100'}`}>
+            <tab.icon size={16} /> <span>{tab.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="min-h-[60vh] space-y-12">
+        {activeTab === 'analysis' && (
+          <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 space-y-12">
+            
+            {/* NEW: STRATEGIC GOAL CONFIGURATION HEADER */}
+            <div className="bg-gradient-to-br from-indigo-900 to-[#1F3864] rounded-[48px] p-10 shadow-2xl space-y-8 relative overflow-hidden">
+               <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -mr-32 -mt-32 blur-3xl" />
+               
+               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+                  <div className="space-y-2">
+                     <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter flex items-center gap-3">
+                        <Target size={28} className="text-indigo-400" /> Stratégie de Maîtrise Visée
+                     </h3>
+                     <p className="text-indigo-200/60 text-[10px] font-bold uppercase tracking-widest">Définissez l'ambition pédagogique de ce programme</p>
+                  </div>
+                  
+                  <div className="flex items-center gap-3 bg-white/10 p-2 rounded-[24px] backdrop-blur-md">
+                     {[
+                        { label: 'Seuil', val: 3.0, icon: Flag },
+                        { label: 'Maîtrise', val: 4.0, icon: Award },
+                        { label: 'Expertise', val: 4.8, icon: Rocket },
+                     ].map(preset => (
+                        <button 
+                           key={preset.label}
+                           onClick={() => {
+                              (formation.targetedComps || []).forEach(compId => {
+                                 store.updateTargetScore(selectedFormationId, compId, preset.val);
+                              });
+                           }}
+                           className="flex items-center gap-2 px-5 py-2.5 rounded-[18px] bg-white/5 hover:bg-white/20 text-white text-[10px] font-black uppercase tracking-widest transition-all"
+                        >
+                           <preset.icon size={14} className="text-indigo-300" /> {preset.label}
+                        </button>
+                     ))}
+                  </div>
+               </div>
+
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
+                  {(formation.targetedComps || []).map(compId => (
+                     <div key={compId} className="bg-white/10 backdrop-blur-sm rounded-[24px] p-5 border border-white/10 flex items-center justify-between group hover:bg-white/20 transition-all">
+                        <div className="flex flex-col">
+                           <span className="text-[8px] font-black text-indigo-300 uppercase tracking-widest truncate max-w-[120px]">
+                              {store.competences[compId] || compId}
+                           </span>
+                           <span className="text-xl font-black text-white">{formation.targetScores?.[compId] || 4.0}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                           <button 
+                              onClick={() => store.updateTargetScore(selectedFormationId, compId, Math.min(5, (formation.targetScores?.[compId] || 4.0) + 0.1).toFixed(1))}
+                              className="p-1.5 hover:bg-white/20 rounded-lg text-white transition-all"
+                           ><ChevronUp size={16} /></button>
+                           <button 
+                              onClick={() => store.updateTargetScore(selectedFormationId, compId, Math.max(1, (formation.targetScores?.[compId] || 4.0) - 0.1).toFixed(1))}
+                              className="p-1.5 hover:bg-white/20 rounded-lg text-white transition-all"
+                           ><ChevronDown size={16} /></button>
+                        </div>
+                     </div>
+                  ))}
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+              
+              {/* Main Analysis Pillars */}
+              <div className="lg:col-span-2 space-y-10">
+                
+                {/* 4 Pillars with Advanced Insights */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                   {[
+                     { key: 'besoins', label: '1. Besoins', icon: Target, q: 'Écart de performance identifié.', insight: skillsInsight },
+                     { key: 'public', label: '2. Public', icon: Users, q: 'Profil et autonomie du groupe.', insight: seniorityInsight },
+                     { key: 'contraintes', label: '3. Contraintes', icon: Layers, q: 'Ressources et cadre logistique.', insight: logisticsInsight },
+                     { key: 'objectifs', label: '4. Objectifs SMART', icon: Lightbulb, q: 'Cibles d\'apprentissage spécifiques.', insight: { summary: 'Générer des cibles basées sur les lacunes.', func: handleGenerateSMART } },
+                   ].map(pillar => (
+                     <div key={pillar.key} className="group bg-white p-8 rounded-[40px] shadow-sm border border-gray-100 hover:border-blue-100 transition-all flex flex-col">
+                        <div className="flex items-start justify-between mb-2">
+                           <h4 className="text-[11px] font-black text-[#1F3864] uppercase tracking-widest flex items-center gap-3">
+                              <pillar.icon size={16} className="text-blue-500" /> {pillar.label}
+                           </h4>
+                           {pillar.insight && (
+                             <button 
+                               onClick={() => {
+                                 if (pillar.key === 'objectifs' && pillar.insight.func) {
+                                   pillar.insight.func();
+                                   return;
+                                 }
+                                 const current = displaySession.cdc?.[pillar.key] || '';
+                                 const prefix = isTerritorialMode ? `[Diagnostic de Circonscription (${currentCirco})]` : `[Diagnostic de Session]`;
+                                 const updatedText = current ? `${current}\n\n${prefix} : ${pillar.insight.summary}` : `${prefix} : ${pillar.insight.summary}`;
+                                 handleUpdate({ cdc: { [pillar.key]: updatedText } });
+                               }}
+                               className="p-3 bg-blue-50 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                               title={pillar.key === 'objectifs' ? "Générer des objectifs SMART" : (isTerritorialMode ? "Injecter le diagnostic territorial" : "Injecter le diagnostic de session")}
+                             >
+                                <Sparkles size={16} />
+                             </button>
+                           )}
+                        </div>
+                                                <p className="text-[10px] font-bold text-gray-400 italic mb-4">{pillar.q}</p>`n                         {pillar.key === 'objectifs' ? (
+                          <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                             {(() => {
+                                let objs = [];
+                                try {
+                                   objs = JSON.parse(displaySession.cdc?.objectifs || '[]');
+                                   if (!Array.isArray(objs)) throw new Error();
+                                } catch(e) {
+                                   objs = (displaySession.cdc?.objectifs || '').split('\n\n').filter(Boolean).map(t => ({ text: t, smart: [] }));
+                                }
+
+                                return objs.map((obj, idx) => (
+                                  <div key={idx} className="bg-gray-50/50 rounded-2xl p-4 border border-transparent hover:border-blue-100 transition-all space-y-3">
+                                     <div className="flex justify-between items-start">
+                                        <textarea 
+                                           value={obj.text}
+                                           onChange={(e) => {
+                                              const next = [...objs];
+                                              next[idx] = { ...next[idx], text: e.target.value };
+                                              handleUpdate({ cdc: { objectifs: JSON.stringify(next) } });
+                                           }}
+                                           className="w-full bg-transparent border-none text-[11px] font-semibold text-[#1F3864] p-0 focus:ring-0 resize-none h-16 leading-tight"
+                                        />
+                                        <button 
+                                          onClick={() => {
+                                            const next = objs.filter((_, i) => i !== idx);
+                                            handleUpdate({ cdc: { objectifs: JSON.stringify(next) } });
+                                          }}
+                                          className="text-gray-300 hover:text-red-500 p-1"
+                                        >
+                                          <X size={14} />
+                                        </button>
+                                     </div>
+                                     <div className="flex gap-1.5">
+                                        {['S','M','A','R','T'].map(letter => {
+                                          const isActive = obj.smart?.includes(letter);
+                                          return (
+                                            <button 
+                                              key={letter} 
+                                              onClick={() => {
+                                                const next = [...objs];
+                                                const currentSmart = next[idx].smart || [];
+                                                const nextSmart = isActive ? currentSmart.filter(l => l !== letter) : [...currentSmart, letter];
+                                                next[idx] = { ...next[idx], smart: nextSmart };
+                                                handleUpdate({ cdc: { objectifs: JSON.stringify(next) } });
+                                              }}
+                                              className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-black transition-all ${isActive ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-100' : 'bg-white border border-gray-100 text-gray-400 hover:bg-emerald-50'}`}
+                                            >
+                                              {letter}
+                                            </button>
+                                          );
+                                        })}
+                                     </div>
+                                  </div>
+                                ));
+                             })()}
+                             <button 
+                               onClick={() => {
+                                 let objs = [];
+                                 try { objs = JSON.parse(displaySession.cdc?.objectifs || '[]'); } catch(e) { objs = []; }
+                                 const next = [...objs, { text: 'Nouvel objectif SMART...', smart: [] }];
+                                 handleUpdate({ cdc: { objectifs: JSON.stringify(next) } });
+                               }}
+                               className="w-full py-3 border-2 border-dashed border-gray-100 rounded-2xl text-[10px] font-black text-gray-300 uppercase hover:border-blue-200 hover:text-blue-500 transition-all"
+                             >
+                               + Ajouter un Objectif
+                             </button>
+                          </div>
+                    </button>
+                          </div>
+                        ) : (
+                          <textarea 
+                             value={displaySession.cdc?.[pillar.key] || ''}
+                             onChange={(e) => handleUpdate({ cdc: { [pillar.key]: e.target.value } })}
+                             className="w-full bg-gray-50/50 border-none rounded-3xl p-6 text-sm font-semibold text-[#1F3864] outline-none min-h-[160px] resize-none shadow-inner"
+                             placeholder={pillar.key === 'besoins' ? "Ex: Lacune majeure sur la gestion de classe..." : "Remplissez ce pilier..."}
+                          />
+                        )}
+                     </div>
+                   ))}
+                </div>
+
+                {/* Synthèse Section */}
+                <div id="synthese-section" className="bg-gradient-to-br from-white to-gray-50 rounded-[48px] p-10 border-2 border-dashed border-blue-100 space-y-10">
+                   <div className="text-center space-y-4">
+                      <div className="inline-flex items-center gap-3 px-4 py-2 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase tracking-widest">
+                         <Sparkles size={14} /> Production du Livrable Final
+                      </div>
+                      <h3 className="text-3xl font-black text-[#1F3864] italic uppercase tracking-tighter">Brouillon du Cahier des Charges</h3>
+                   </div>
+                   
+                   <div className="flex justify-center">
+                      <button 
+                        onClick={handleGenerateDraft}
+                        className={`group relative flex items-center gap-4 px-12 py-6 rounded-[32px] font-black text-lg shadow-2xl hover:scale-105 active:scale-95 transition-all overflow-hidden ${showSuccess ? 'bg-emerald-500 text-white' : 'bg-gradient-to-r from-blue-600 to-indigo-800 text-white'}`}
+                      >
+                         <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+                         {showSuccess ? <CheckCircle className="animate-bounce" size={24} /> : <Wand2 size={24} className="group-hover:rotate-12 transition-transform" />}
+                         {showSuccess ? 'Brouillon Mis à jour !' : 'Générer la Synthèse ADDIE'}
+                      </button>
+                   </div>
+
+                   <textarea 
+                      value={displaySession.cdc?.draft || ''}
+                      onChange={(e) => handleUpdate({ cdc: { draft: e.target.value } })}
+                      className="w-full bg-white border-2 border-blue-50 focus:border-blue-200 rounded-[32px] p-10 text-sm font-bold text-[#1F3864] outline-none min-h-[400px] leading-relaxed shadow-inner"
+                      placeholder="Compilez les piliers pour générer la version finale..."
+                   />
+                </div>
+              </div>
+
+              {/* Advanced Data Explorer Sidebar */}
+              <div className="space-y-8">
+                 <div className="bg-white/80 backdrop-blur-xl rounded-[40px] p-8 border border-white shadow-2xl sticky top-8 space-y-8">
+                    
+                        <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+                           <h4 className="font-black text-xs uppercase tracking-widest text-[#1F3864] flex items-center gap-2">
+                              <Activity size={18} className="text-blue-500" /> Deep Analytics
+                           </h4>
+                           <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all ${isTerritorialMode ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'bg-blue-50 text-blue-600'}`}>
+                              {isTerritorialMode ? 'Diagnostic Territorial' : 'Live Session Data'}
+                           </span>
+                        </div>
+
+                    {/* Skill Radar - Horizontal Bars */}
+                    {skillsInsight && (
+                      <div className="space-y-6">
+                         <div className="flex items-center justify-between">
+                            <h5 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Maîtrise vs Moyenne</h5>
+                            <GaugeCircle size={14} className="text-gray-300" />
+                         </div>
+                         <div className="space-y-6">
+                             {skillsInsight.stats.map(stat => (
+                              <div key={stat.id} className="group space-y-2">
+                                 <div className="flex justify-between items-center text-[10px] font-black text-[#1F3864]">
+                                    <span className="uppercase flex items-center gap-1.5">
+                                      {stat.label}
+                                      {stat.isVerified ? (
+                                        <ShieldCheck size={12} className="text-emerald-500" />
+                                      ) : (
+                                        <ShieldAlert size={12} className="text-orange-400" />
+                                      )}
+                                    </span>
+                                    <span className="text-blue-600">Score: {stat.groupAvg}/5</span>
+                                 </div>
+                                 <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden relative">
+                                    {/* Benchmarking mark: Master Target (Gray) */}
+                                    <div className="absolute top-0 bottom-0 w-1 bg-gray-400 z-10" style={{ left: `${(stat.targetScore / 5) * 100}%` }} title="Cible Master (Objectif)" />
+                                    
+                                    {/* Benchmarking mark: District (Blue) */}
+                                    {districtInsight && (
+                                      <div className="absolute top-0 bottom-0 w-0.5 bg-blue-300 z-10" style={{ left: `${(districtInsight.avg / 5) * 100}%` }} title={`Moyenne Circo (${districtInsight.circo})`} />
+                                    )}
+
+                                    {/* The Group's Bar */}
+                                    <div 
+                                       className={`h-full opacity-80 transition-all duration-1000 ${stat.gapPct >= 0 ? 'bg-emerald-400' : 'bg-red-400'}`} 
+                                       style={{ width: `${(stat.groupAvg / 5) * 100}%` }} 
+                                    />
+                                 </div>
+                                 
+                                 {/* Sidebar is now read-only and cleaner */}
+                                 <div className="flex justify-between items-center mt-1 px-1">
+                                    <span className="text-[7px] font-bold text-gray-400 uppercase tracking-tighter">
+                                      {stat.evidencePct}% de preuves terrain
+                                    </span>
+                                    <span className="text-[8px] font-black text-gray-600">Cible: {stat.targetScore}</span>
+                                 </div>
+                              </div>
+                            ))}
+                         </div>
+                         <div className="p-4 bg-gray-50 rounded-2xl space-y-3">
+                            <p className="text-[8px] font-bold text-gray-500 leading-relaxed italic">
+                               <span className="text-[#1F3864] font-black underline">Analyse d'Objectif :</span> Écart calculé par rapport à votre <span className="text-gray-400 font-black">Cible de Maîtrise</span> personnalisée.
+                            </p>
+                            <div className="grid grid-cols-2 gap-2">
+                               <div className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-gray-400">
+                                  <div className="w-1 h-3 bg-gray-400 rounded-full" /> Cible Master
+                               </div>
+                               <div className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-blue-300">
+                                  <div className="w-1 h-3 bg-blue-300 rounded-full" /> Moyenne Circo
+                               </div>
+                               <div className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-blue-600 col-span-2">
+                                  <div className="w-3 h-1 bg-blue-500 rounded-full opacity-80" /> Session Actuelle
+                               </div>
+                            </div>
+                         </div>
+                      </div>
+                    )}
+
+                    {/* Seniority Dashboard */}
+                    {seniorityInsight && (
+                      <div className="space-y-5 p-6 bg-blue-50/50 rounded-[32px] border border-blue-50">
+                         <h5 className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Composition du Groupe</h5>
+                         <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                               <div className="text-2xl font-black text-blue-600">{seniorityInsight.stagiaires}</div>
+                               <div className="text-[8px] font-black text-blue-400 uppercase">Stagiaires</div>
+                            </div>
+                            <div className="space-y-1">
+                               <div className="text-2xl font-black text-[#1F3864]">{seniorityInsight.titulaires}</div>
+                               <div className="text-[8px] font-black text-[#1F3864] uppercase">Titulaires</div>
+                            </div>
+                         </div>
+                         {/* Distribution Bar */}
+                         <div className="h-1.5 w-full bg-white rounded-full flex overflow-hidden">
+                            <div className="h-full bg-blue-500" style={{ width: `${seniorityInsight.stagiairePct}%` }} />
+                            <div className="h-full bg-[#1F3864]" style={{ width: `${100 - seniorityInsight.stagiairePct}%` }} />
+                         </div>
+                      </div>
+                    )}
+
+                    {/* Logistics Widget */}
+                    {logisticsInsight && (
+                       <div className="space-y-3">
+                          <h5 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Logistique Terrain</h5>
+                          <div className="p-5 bg-white rounded-[24px] shadow-sm border border-gray-100 space-y-3">
+                             <div className="text-xs font-black text-[#1F3864]">{logisticsInsight.lieu}</div>
+                             <div className="flex flex-wrap gap-1.5">
+                                {logisticsInsight.items.map(it => (
+                                  <span key={it} className="px-2 py-0.5 bg-gray-50 rounded text-[7px] font-black text-gray-400 uppercase">{it}</span>
+                                ))}
+                             </div>
+                          </div>
+                       </div>
+                    )}
+
+                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Design Tab remains functional */}
+        {activeTab === 'design' && (
+           <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 space-y-10">
+              <div className="flex justify-between items-center px-4">
+                 <h2 className="text-2xl font-black italic uppercase text-[#1F3864]"><Layout size={26} className="text-blue-500" /> Séquençage Session</h2>
+                 <button onClick={handleAddModule} className="px-8 py-4 bg-blue-600 text-white rounded-3xl text-sm font-black shadow-lg">+ Ajouter un Module</button>
+              </div>
+              <div className="grid grid-cols-1 gap-6">
+                 {(displaySession.modules || []).map((m, i) => (
+                    <div key={m.id} className="bg-white p-8 rounded-[40px] shadow-sm border border-gray-100 flex items-center justify-between group">
+                       <div className="flex items-center gap-6"><div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center font-black">{i+1}</div><h4 className="font-black text-[#1F3864]">{m.title}</h4></div>
+                       <button onClick={() => handleDeleteModule(m.id)} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash2 size={20} /></button>
+                    </div>
+                 ))}
+                 {(!displaySession.modules || displaySession.modules.length === 0) && (
+                    <div className="py-20 text-center text-gray-300 font-bold italic">Aucun module pour le moment.</div>
+                 )}
+              </div>
+           </div>
+        )}
+      </div>
+
+      {isAddingSession && (
+        <SessionEditModal 
+          isNew={true}
+          session={{ 
+            Formation: selectedFormationId, 
+            'Titre formation': formation?.libelle || '',
+            'Circonscription': Object.keys(store.crefocs)[0] || 'Kef',
+            'Lieu': `CREFOC ${Object.keys(store.crefocs)[0] || 'Kef'}`,
+            'Date (Samedi)': new Date().toISOString().split('T')[0],
+            inscrits: []
+          }}
+          store={store}
+          onSave={handleSaveNewSession}
+          onClose={() => setIsAddingSession(false)}
+        />
+      )}
+    </div>
+  );
+}
