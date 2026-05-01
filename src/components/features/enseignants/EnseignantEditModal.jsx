@@ -91,7 +91,7 @@ function StyledInput({ value, onChange, type = 'text', placeholder, className = 
   );
 }
 
-export function EnseignantEditModal({ enseignant, formations, crefocs, visits, isNew, onSave, onClose }) {
+export function EnseignantEditModal({ enseignant, formations, referential, crefocs, visits, isNew, onSave, onClose }) {
   const circosList = Object.keys(crefocs || {});
   
   const latestVisitFromHistory = useMemo(() => {
@@ -410,29 +410,79 @@ export function EnseignantEditModal({ enseignant, formations, crefocs, visits, i
             </div>
           </section>
 
-          {/* Course Availability */}
-          <section className="pb-6">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="p-1.5 rounded-lg bg-purple-50 text-purple-500">
-                <Plus size={14} fill="currentColor" />
+          {/* Course Availability - Grouped by Family */}
+          <section className="pb-10">
+            <div className="flex items-center gap-3 mb-8">
+              <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-500">
+                <Shield size={14} fill="currentColor" />
               </div>
-              <h3 className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em]">Disponibilité Formations</h3>
+              <h3 className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em]">Disponibilité & Aptitudes</h3>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              {Object.entries(formations || {}).map(([id, f]) => {
-                const key = `Dispo ${id}`;
+            
+            <div className="space-y-8">
+              {Object.entries(formations || {}).map(([famId, fam]) => {
+                const famKey = `Dispo ${famId}`;
+                const famModules = Object.values(referential || {}).filter(m => m.id.startsWith(famId + '.'));
+                
                 return (
-                  <div key={id} className="p-4 bg-[#1F3864]/[0.02] rounded-2xl border border-gray-100 flex flex-col gap-3">
-                    <p className="text-[10px] font-black text-[#1F3864] uppercase tracking-tighter opacity-80 truncate">{id}</p>
-                    <Select
-                      value={form[key] || 'Oui'}
-                      onChange={v => set(key, v)}
-                      options={[
-                        { value: 'Oui', label: 'Disponible' },
-                        { value: 'Non', label: 'Inapte' },
-                        { value: 'En attente', label: 'Vérif.' },
-                      ]}
-                    />
+                  <div key={famId} className="bg-gray-50/50 rounded-[32px] border border-gray-100/50 overflow-hidden">
+                    {/* Family Header */}
+                    <div className="px-6 py-4 bg-white border-b border-gray-100 flex items-center justify-between">
+                       <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-600 flex items-center justify-center text-[10px] font-black text-white shadow-lg shadow-indigo-200">
+                             {famId}
+                          </div>
+                          <div>
+                             <p className="text-[11px] font-black text-[#1F3864] uppercase tracking-tight">{fam.libelle}</p>
+                             <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">{famModules.length} Modules associés</p>
+                          </div>
+                       </div>
+                       <div className="w-32">
+                          <Select
+                            value={form[famKey] || 'Oui'}
+                            onChange={v => {
+                               set(famKey, v);
+                               // Cascading update: set all modules to same value for convenience
+                               famModules.forEach(mod => {
+                                  set(`Dispo ${mod.id}`, v);
+                               });
+                            }}
+                            options={[
+                              { value: 'Oui', label: 'Disponible' },
+                              { value: 'Non', label: 'Inapte' },
+                              { value: 'En attente', label: 'À vérifier' },
+                            ]}
+                          />
+                       </div>
+                    </div>
+
+                    {/* Modules Grid */}
+                    {famModules.length > 0 && (
+                      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {famModules.map(mod => {
+                          const modKey = `Dispo ${mod.id}`;
+                          return (
+                            <div key={mod.id} className="flex items-center justify-between p-3 bg-white rounded-2xl border border-gray-100 shadow-sm group hover:border-indigo-100 transition-all">
+                               <div className="min-w-0 pr-4">
+                                  <p className="text-[9px] font-black text-indigo-500 uppercase tracking-tighter mb-0.5">{mod.id}</p>
+                                  <p className="text-[10px] font-bold text-gray-700 truncate" title={mod.libelle}>{mod.libelle}</p>
+                               </div>
+                               <div className="w-24 shrink-0">
+                                  <select 
+                                    value={form[modKey] || form[famKey] || 'Oui'}
+                                    onChange={e => set(modKey, e.target.value)}
+                                    className="w-full bg-transparent text-[10px] font-black text-[#1F3864] uppercase tracking-widest outline-none focus:text-indigo-600 transition-colors"
+                                  >
+                                    <option value="Oui">OK</option>
+                                    <option value="Non">NON</option>
+                                    <option value="En attente">?</option>
+                                  </select>
+                               </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}

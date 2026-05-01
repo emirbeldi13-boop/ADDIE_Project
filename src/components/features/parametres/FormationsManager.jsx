@@ -169,7 +169,10 @@ export function FormationsManager({
                     </div>
                     <div className="flex items-center gap-4 mt-1">
                       <span className="text-xs font-semibold text-gray-400 flex items-center gap-1">
-                        Trimestre: <span className="text-gray-600">{form.trimestre}</span>
+                        Famille: <span className="text-indigo-600 uppercase tracking-tighter">{form.family || 'N/A'}</span>
+                      </span>
+                      <span className="text-xs font-semibold text-gray-400 flex items-center gap-1">
+                        IPF: <span className="text-amber-600">{form.ipf || 3}</span>
                       </span>
                       <span className="text-xs font-semibold text-gray-400 flex items-center gap-1">
                         OPP: <span className="text-gray-600">{form.objectifs?.length || 0}</span>
@@ -244,7 +247,7 @@ export function FormationsManager({
                       </button>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {form.objectifs.map((obj, idx) => (
+                      {(form.objectifs || []).map((obj, idx) => (
                         <div key={obj.id} className="group relative flex items-start gap-4 p-4 bg-white border border-gray-100 rounded-2xl hover:border-[#2E75B6]/30 transition-all hover:shadow-sm">
                           {editingObj && editingObj.formId === form.id && editingObj.objIndex === idx ? (
                             <div className="flex-1 flex flex-col gap-2">
@@ -284,7 +287,7 @@ export function FormationsManager({
                           )}
                         </div>
                       ))}
-                      {form.objectifs.length === 0 && (
+                      {(form.objectifs || []).length === 0 && (
                         <div className="col-span-full py-8 text-center bg-gray-50/50 rounded-2xl border border-dashed border-gray-200">
                            <p className="text-xs text-gray-400">Aucun objectif opérationnel pour cette formation.</p>
                         </div>
@@ -423,6 +426,36 @@ export function FormationsManager({
                               onChange={(e) => handleInputChange('color', e.target.value)}
                             />
                           </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Famille (Catégorisation)</label>
+                          <select 
+                            className="w-full border border-gray-100 bg-gray-50 rounded-2xl px-4 py-3 text-sm focus:outline-none transition-all"
+                            value={editValues.family || ''}
+                            onChange={(e) => handleInputChange('family', e.target.value)}
+                          >
+                            <option value="Linguistique">Linguistique</option>
+                            <option value="Didactique">Didactique</option>
+                            <option value="Ingénierie">Ingénierie</option>
+                            <option value="Évaluation">Évaluation</option>
+                            <option value="Inclusion">Inclusion</option>
+                            <option value="Numérique">Numérique</option>
+                            <option value="Professionnel">Professionnel</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Indice de Priorité (IPF) [1-5]</label>
+                          <input 
+                            type="number"
+                            min="1"
+                            max="5"
+                            className="w-full border border-gray-100 bg-gray-50 rounded-2xl px-4 py-3 text-sm focus:outline-none transition-all font-bold"
+                            value={editValues.ipf || 3}
+                            onChange={(e) => handleInputChange('ipf', parseInt(e.target.value))}
+                          />
                         </div>
                       </div>
 

@@ -433,6 +433,15 @@ function buildPriorityList(
       isOverridden,
       overrideInfo: isOverridden ? override : null,
       scores: scoresByEns[id] || {},
+      // TRIANGULATED REALITY SCORES per RC
+      realityScores: globalTargetedComps.reduce((acc, code) => {
+        const auto = (scoresByEns[id] || {})[code];
+        const visitsWithComp = activeVisits.filter(v => v.scores && v.scores[code] !== null && v.scores[code] !== undefined);
+        const obs = computeTemporalScore(visitsWithComp.map(v => ({ ...v, score: v.scores[code] })), temporalCoeffs);
+        
+        acc[code] = obs !== null ? (obs * 0.6 + (auto ?? 3) * 0.4) : (auto ?? 3);
+        return acc;
+      }, {})
     };
   });
 
@@ -907,24 +916,35 @@ export function useDataStore() {
   }, []);
 
   // ── §3.3 Needs analysis validation ────────────────────────────────────────
-  const validateNeedsTheme = useCallback((theme, competencies, comment) => {
-    const decision = {
-      theme,
-      competencies,
-      comment: comment || '',
-      timestamp: new Date().toISOString(),
-      validated: true,
-      validatedBy: 'Mohamed Amir Beldi',
-    };
-    setNeedsDecision(decision);
-    save('pedagotrack_needs_decision', decision);
-    addAuditEntry('needs_theme_validated', null, decision);
-  }, [addAuditEntry]);
+  const validateNeedsTheme = useCallback(
+    async (theme, competencies, comment) => {
+      const decision = {
+        theme,
+        competencies,
+        comment: comment || '',
+        timestamp: new Date().toISOString(),
+        validated: true,
+        validatedBy: 'Mohamed Amir Beldi',
+      };
+      setNeedsDecision(decision);
+      if (user?.id) {
+        await db.upsertUserSetting('pedagotrack_needs_decision', decision, user.id);
+      }
+      await addAuditEntry('needs_theme_validated', null, decision);
+      return decision;
+    },
+    [user, addAuditEntry]
+  );
 
-  const updateNeedsWeights = useCallback((weights) => {
-    setNeedsWeights(weights);
-    save('pedagotrack_needs_weights', weights);
-  }, []);
+  const updateNeedsWeights = useCallback(
+    async (weights) => {
+      setNeedsWeights(weights);
+      if (user?.id) {
+        await db.upsertUserSetting('pedagotrack_needs_weights', weights, user.id);
+      }
+    },
+    [user]
+  );
 
   // ── Enseignants CRUD ───────────────────────────────────────────────────────
   const updateEnseignant = useCallback(async (id, changes) => {
@@ -1227,7 +1247,7 @@ export function useDataStore() {
       setReferential(prev => ({ ...prev, [item.id]: item }));
     },
     updateReferentialItem: async (id, partial) => {
-      const next = { ...referential[id], ...partial };
+      const next = { ...referential[id], ...partial, id };
       await db.upsertReferential(next, user.id);
       setReferential(prev => ({ ...prev, [id]: next }));
     },

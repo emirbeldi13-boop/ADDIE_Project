@@ -2,13 +2,14 @@ import React, { useState, useMemo } from 'react';
 import { Target, Zap, Rocket, Search, Filter, ArrowRight, CheckCircle2, AlertTriangle, Sparkles, BookOpen, Settings2 } from 'lucide-react';
 import { ReferentialEditModal } from './ReferentialEditModal';
 
-export function DecisionArbitrageHub({ 
-  store, 
-  formations, 
-  quickWins, 
-  hybridOps, 
+export function DecisionArbitrageHub({
+  store,
+  formations,
+  quickWins,
+  hybridOps,
   onOpenSession,
-  participants 
+  participants,
+  causalDiagnostics,
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedFormation, setSelectedFormation] = useState(null);
@@ -93,7 +94,36 @@ export function DecisionArbitrageHub({
   }, [selectedFormation, participants, quickWins, store.crefocs, store.selectedCircos]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-[600px]">
+    <div id="arbitrage-hub" className="space-y-4">
+      {causalDiagnostics?.primaryRootId && (
+        <div className="rounded-[28px] border border-indigo-200 bg-indigo-50/90 px-5 py-4 text-[11px] text-indigo-950 leading-relaxed">
+          <span className="font-black uppercase tracking-widest text-indigo-700 text-[9px] block mb-1">
+            Pont moteur causal → catalogue
+          </span>
+          Racine prioritaire détectée : <strong>{causalDiagnostics.primaryRootId}</strong>
+          {causalDiagnostics.primaryFormationId ? (
+            <>
+              {' '}
+              — module catalogue associé (IPF) : <strong>{causalDiagnostics.primaryFormationId}</strong>. Comparez
+              IPT et effort ci-dessous ; si vous choisissez un autre module, documentez l&apos;écart dans
+              l&apos;arbitrage final.
+            </>
+          ) : (
+            <>
+              {' '}
+              — aucun module catalogue unique ; explorez les formations recommandées ou ajoutez un module au
+              référentiel.
+            </>
+          )}
+          {causalDiagnostics.robustnessLevel === 'insufficient' && (
+            <span className="block mt-2 text-amber-800 font-medium">
+              Fiabilité réduite (quorum) : croiser avec les réserves du diagnostic causal avant engagement.
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-[600px]">
       
       {/* 🧩 LEFT: RECOMMENDATIONS & DISCOVERY */}
       <div className="lg:col-span-4 space-y-6">
@@ -342,6 +372,7 @@ export function DecisionArbitrageHub({
               </button>
            </div>
         </div>
+      </div>
       </div>
 
       <ReferentialEditModal 

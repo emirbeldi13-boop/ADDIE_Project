@@ -334,7 +334,7 @@ export function VisitModal({ enseignant, competences, onSave, onClose, addCompet
                       <label className="block text-xs text-gray-500 mb-1">
                         Poids
                         <span className="ml-1 font-semibold text-[#1F3864]">
-                          {((parseFloat(weights[comp]) || 0) / totalWeight * 100).toFixed(0)}%
+                          {totalWeight > 0 ? ((parseFloat(weights[comp]) || 0) / totalWeight * 100).toFixed(0) : '0'}%
                         </span>
                       </label>
                       <input

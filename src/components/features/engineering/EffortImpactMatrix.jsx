@@ -17,7 +17,7 @@ const FAMILY_COLORS = {
   "default": "#94a3b8"
 };
 
-export function EffortImpactMatrix({ store, participants, formations, selectedCircos, topUrgencyRC }) {
+export function EffortImpactMatrix({ store, participants, formations, selectedCircos, topUrgencyRC, selectedIds }) {
   const [selectedCrefocId, setSelectedCrefocId] = useState(
     selectedCircos.length === 1 && selectedCircos[0] !== 'National' ? selectedCircos[0] : Object.keys(store.crefocs)[0]
   );
@@ -41,11 +41,7 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
     return formations.map(f => {
       const targeted = f.targetedComps && f.targetedComps.length > 0 ? f.targetedComps : ['RC1', 'RC2'];
       const teacherAverages = participants.map(p => {
-        const compScores = targeted.map(rcId => {
-          const auto = p.scores?.[rcId] || 3;
-          const obs = p.temporalObsScore;
-          return obs !== null ? (obs * 0.6 + auto * 0.4) : auto;
-        });
+        const compScores = targeted.map(rcId => p.realityScores?.[rcId] ?? 3);
         return compScores.reduce((a, b) => a + b, 0) / compScores.length;
       });
 
@@ -69,16 +65,20 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
       const jitterX = ((f.id.length * 7) % 10) - 5; 
       const jitterY = ((f.id.charCodeAt(0) * 3) % 10) - 5;
 
+      const isSelected = selectedIds?.has(f.id);
+
       return {
         id: f.id,
         name: f.libelle || f.title || f.titre || "Sans titre",
-        impact: f.ipt !== undefined ? f.ipt : Math.min(100, Math.max(0, Math.round(impactScore) + jitterY / 2)),
+        impact: f.finalScore !== undefined ? f.finalScore : Math.min(100, Math.max(0, Math.round(impactScore) + jitterY / 2)),
         effort: Math.min(100, Math.max(0, Math.round(effortScore) + jitterX / 2)),
-        z: f.ipt !== undefined ? f.ipt : impactScore,
+        z: f.finalScore !== undefined ? f.finalScore : impactScore,
         family: f.family || "default",
         type,
         crefocId: targetCrefoc?.id || selectedCrefocId,
         targetedComps: targeted,
+        finalScore: f.finalScore,
+        isSelected,
         details: { material: Math.round(materialFactor), deployment: Math.round(deploymentFactor), heterogeneity: Math.round(heterogeneityFactor) }
       };
     });
@@ -98,9 +98,38 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
   const recommendations = useMemo(() => {
     return matrixData
       .filter(d => d.type === 'primary' && visibleFormations[d.id])
-      .sort((a, b) => ((b.impact * 1.6) - b.effort) - ((a.impact * 1.6) - a.effort))
+      .sort((a, b) => {
+        if (b.finalScore !== undefined && a.finalScore !== undefined) {
+          return b.finalScore - a.finalScore;
+        }
+        return ((b.impact * 1.6) - b.effort) - ((a.impact * 1.6) - a.effort);
+      })
       .slice(0, 3);
   }, [matrixData, visibleFormations]);
+
+  const findBestSite = (formationId) => {
+    const formation = formations.find(f => f.id === formationId);
+    if (!formation) return null;
+    
+    let best = { id: null, score: -1 };
+    Object.entries(store.crefocs).forEach(([id, c]) => {
+      // Small reusable version of effort calculation
+      const activeLogistics = c.logistics || {};
+      const specificRequirements = formation.requirements || [];
+      const universalRequirements = ['tableau', 'photocopieuse', 'videoproj'];
+      const allRequirements = [...new Set([...universalRequirements, ...specificRequirements])];
+      
+      let logisticsGap = 0;
+      allRequirements.forEach(req => {
+        if (!activeLogistics[req]) logisticsGap += 10;
+      });
+
+      const deploymentEffort = Math.min(40, (participants.length / 15) * 5);
+      const score = 100 - (20 + deploymentEffort + logisticsGap);
+      if (score > best.score) best = { id, score };
+    });
+    return best;
+  };
 
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
@@ -117,12 +146,12 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
           <p className="text-xs font-black mb-4 leading-tight uppercase">{data.name}</p>
           <div className="space-y-3 pt-1">
             <div className="flex justify-between items-center text-[10px] font-black uppercase">
-              <span className="text-slate-400 tracking-widest">Impact ROI</span>
-              <span className="text-emerald-400">{data.impact}%</span>
+              <span className="text-slate-400 tracking-widest">Faisabilité</span>
+              <span className="text-emerald-400">{100 - data.effort}%</span>
             </div>
             <div className="flex justify-between items-center text-[10px] font-black uppercase">
-               <span className="text-slate-400 tracking-widest">Effort Logistique</span>
-               <span className="text-amber-400">{data.effort}%</span>
+               <span className="text-slate-400 tracking-widest">Merite Strat.</span>
+               <span className="text-indigo-400">{data.finalScore || data.impact}</span>
             </div>
           </div>
         </div>
@@ -213,18 +242,20 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
                         setVisibleFormations(next);
                       }} className="text-[10px] font-black text-indigo-600 hover:underline">Toggle All</button>
                    </div>
-                   {calculateForCrefoc(crefoc).sort((a,b) => b.impact - a.impact).map(f => (
-                     <div key={f.id} onClick={() => setVisibleFormations(prev => ({ ...prev, [f.id]: !prev[f.id] }))} className={`p-4 rounded-3xl border transition-all cursor-pointer group ${visibleFormations[f.id] ? 'bg-slate-50 border-slate-200 shadow-sm' : 'opacity-40 border-transparent hover:opacity-60'}`}>
-                        <div className="flex items-center justify-between gap-3">
-                           <div className="min-w-0 flex-1">
-                              <p className="text-[11px] font-black text-slate-900 uppercase truncate leading-tight">{f.name}</p>
-                              <p className="text-[9px] font-bold text-slate-400 mono-label mt-1">{f.id} • ROI {f.impact}%</p>
-                           </div>
-                           <div className={`w-5 h-5 rounded-lg flex items-center justify-center transition-all ${visibleFormations[f.id] ? 'bg-slate-900 text-white' : 'bg-slate-200 text-transparent'}`}>
-                              <CheckSquare size={12} />
-                           </div>
-                        </div>
-                     </div>
+                   {calculateForCrefoc(crefoc).sort((a,b) => (b.finalScore || 0) - (a.finalScore || 0)).map(f => (
+                      <div key={f.id} className={`p-4 rounded-3xl border transition-all cursor-not-allowed group ${f.isSelected ? 'bg-indigo-600 border-indigo-400 shadow-xl scale-[1.02]' : 'bg-slate-50 border-slate-200 opacity-40 grayscale'}`}>
+                         <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                               <p className={`text-[11px] font-black uppercase truncate leading-tight ${f.isSelected ? 'text-white' : 'text-slate-900'}`}>{f.name}</p>
+                               <p className={`text-[9px] font-bold mt-1 ${f.isSelected ? 'text-indigo-100' : 'text-slate-400'}`}>{f.id} • Score Stratégique: {f.finalScore || 'N/A'}</p>
+                            </div>
+                            {f.isSelected && (
+                              <div className="w-5 h-5 rounded-full bg-white text-indigo-600 flex items-center justify-center shadow-lg animate-pulse">
+                                 <CheckSquare size={12} />
+                              </div>
+                            )}
+                         </div>
+                      </div>
                    ))}
                 </div>
               ) : (
@@ -252,23 +283,33 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
               <div className="absolute bottom-10 left-10 text-[10px] font-black text-slate-200 uppercase tracking-[0.3em]">Maintenance</div>
               <div className="absolute bottom-10 right-10 text-[10px] font-black text-amber-300/40 uppercase tracking-[0.3em]">Low Priority</div>
 
-              <ResponsiveContainer width="100%" height={450}>
+              <ResponsiveContainer width="100%" height={450} minWidth={1} minHeight={1}>
                 <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                    <CartesianGrid strokeDasharray="1 6" stroke="#e2e8f0" />
                    <XAxis type="number" dataKey="effort" reversed domain={[0, 100]} tick={{fontSize: 9, fill: '#94a3b8', className: 'mono-label font-bold'}} label={{ value: "← EFFORT LOGISTIQUE (%)", position: 'insideBottom', offset: -10, fontSize: 10, fill: '#94a3b8', fontWeight: '900', className: 'tracking-[0.1em]' }} />
-                   <YAxis type="number" dataKey="impact" domain={[0, 100]} tick={{fontSize: 9, fill: '#94a3b8', className: 'mono-label font-bold'}} label={{ value: "PRIORITÉ IMPACT (IPT) →", angle: -90, position: 'insideLeft', offset: 10, fontSize: 10, fill: '#94a3b8', fontWeight: '900', className: 'tracking-[0.1em]' }} />
-                   <ZAxis type="number" dataKey="z" range={[100, 800]} />
+                   <YAxis type="number" dataKey="impact" domain={[0, 300]} tick={{fontSize: 9, fill: '#94a3b8', className: 'mono-label font-bold'}} label={{ value: "MÉRITE STRATÉGIQUE (SCORE GLOBAL) →", angle: -90, position: 'insideLeft', offset: 10, fontSize: 10, fill: '#94a3b8', fontWeight: '900', className: 'tracking-[0.1em]' }} />
+                   <ZAxis type="number" dataKey="z" range={[100, 1200]} />
                    
-                   <ReferenceArea x1={50} x2={100} y1={50} y2={100} fill="#6366f1" fillOpacity={0.02} />
-                   <ReferenceArea x1={0} x2={50} y1={50} y2={100} fill="#10b981" fillOpacity={0.03} />
-                   <ReferenceArea x1={0} x2={100} y1={0} y2={50} fill="#f1f5f9" fillOpacity={0.03} />
+                   <ReferenceArea ifOverflow="hidden" x1={50} x2={100} y1={150} y2={300} fill="#6366f1" fillOpacity={0.04} />
+                   <ReferenceArea ifOverflow="hidden" x1={0} x2={50} y1={150} y2={300} fill="#10b981" fillOpacity={0.05} />
+                   <ReferenceArea ifOverflow="hidden" x1={0} x2={100} y1={0} y2={150} fill="#f1f5f9" fillOpacity={0.03} />
                    <ReferenceLine x={50} stroke="#cbd5e1" strokeDasharray="8 8" />
-                   <ReferenceLine y={50} stroke="#cbd5e1" strokeDasharray="8 8" />
+                   <ReferenceLine y={150} stroke="#cbd5e1" strokeDasharray="8 8" />
 
                    <Tooltip content={<CustomTooltip />} />
                    <Scatter data={filteredData}>
                       {filteredData.map((entry) => (
-                        <Cell key={`cell-${entry.id}-${entry.crefocId}-${entry.type}`} onMouseEnter={() => setHoveredId(entry.id)} onMouseLeave={() => setHoveredId(null)} fill={entry.type === 'primary' ? FAMILY_COLORS[entry.family] : 'transparent'} stroke={FAMILY_COLORS[entry.family]} strokeWidth={entry.type === 'comparison' ? 2 : 0} strokeDasharray={entry.type === 'comparison' ? '4 4' : 'none'} className="transition-all duration-300 cursor-pointer hover:scale-125" fillOpacity={hoveredId === entry.id ? 1 : 0.6} />
+                        <Cell 
+                          key={`cell-${entry.id}-${entry.crefocId}-${entry.type}`} 
+                          onMouseEnter={() => setHoveredId(entry.id)} 
+                          onMouseLeave={() => setHoveredId(null)} 
+                          fill={entry.isSelected ? '#4f46e5' : (entry.type === 'primary' ? FAMILY_COLORS[entry.family] : 'transparent')} 
+                          stroke={entry.isSelected ? '#ffffff' : FAMILY_COLORS[entry.family]} 
+                          strokeWidth={entry.isSelected ? 3 : (entry.type === 'comparison' ? 2 : 0.5)} 
+                          strokeDasharray={entry.type === 'comparison' ? '4 4' : 'none'} 
+                          className={`transition-all duration-300 cursor-pointer hover:scale-125 ${entry.isSelected ? 'drop-shadow-[0_0_10px_rgba(79,70,229,0.6)]' : ''}`} 
+                          fillOpacity={hoveredId === entry.id || entry.isSelected ? 1 : 0.4} 
+                        />
                       ))}
                       <LabelList dataKey="id" content={(props) => {
                          const { x, y, payload } = props;
@@ -282,29 +323,67 @@ export function EffortImpactMatrix({ store, participants, formations, selectedCi
 
            {/* RECOMMENDATIONS CARDS */}
            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-              {recommendations.map((rec, idx) => (
-                <div key={rec.id} className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group overflow-hidden relative">
-                   <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-30 transition-opacity">
-                      <Zap size={40} className="text-indigo-600" />
-                   </div>
-                   <div className="flex items-center gap-2 mb-3">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: FAMILY_COLORS[rec.family] }} />
-                      <span className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Optimal Choice #{idx+1}</span>
-                   </div>
-                   <p className="text-xs font-black text-slate-900 leading-tight uppercase line-clamp-2 min-h-[32px] mb-4 tracking-tight">{rec.name}</p>
-                   <div className="flex justify-between items-end">
-                      <div className="space-y-0.5">
-                         <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">Impact {rec.impact}%</span>
-                         <div className="w-16 h-1 bg-slate-100 rounded-full">
-                            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${rec.impact}%` }} />
+              {recommendations.map((rec, idx) => {
+                const feasibility = 100 - rec.effort;
+                const bestSite = findBestSite(rec.id);
+                
+                return (
+                  <div key={rec.id} className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group overflow-hidden relative">
+                    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-30 transition-opacity">
+                        <Layers size={40} className="text-emerald-600" />
+                    </div>
+                    <div className="flex items-center gap-2 mb-3">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: FAMILY_COLORS[rec.family] }} />
+                        <span className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Faisabilité à {selectedCrefocId}</span>
+                    </div>
+                    <p className="text-xs font-black text-slate-900 leading-tight uppercase line-clamp-2 min-h-[32px] mb-4 tracking-tight">{rec.name}</p>
+                    
+                    <div className="space-y-3 mb-4">
+                       {[
+                         { label: 'Logistique', val: 100 - (rec.details?.material || 0), color: 'bg-emerald-500' },
+                         { label: 'Pédagogie', val: 100 - (rec.details?.heterogeneity || 0), color: 'bg-indigo-500' },
+                         { label: 'Déploiement', val: 100 - (rec.details?.deployment || 0), color: 'bg-amber-500' },
+                       ].map(pillar => (
+                         <div key={pillar.label} className="space-y-1">
+                            <div className="flex justify-between text-[7px] font-black uppercase text-slate-400">
+                               <span>{pillar.label}</span>
+                               <span>{pillar.val}%</span>
+                            </div>
+                            <div className="w-full h-1 bg-slate-100 rounded-full">
+                               <div className={`h-full ${pillar.color} rounded-full transition-all duration-1000`} style={{ width: `${pillar.val}%` }} />
+                            </div>
+                         </div>
+                       ))}
+                    </div>
+
+                    <div className="flex justify-between items-center py-3 border-t border-slate-100 mb-2">
+                        <div className="flex flex-col">
+                           <span className="text-[14px] font-black text-slate-900">{feasibility}%</span>
+                           <span className="text-[7px] font-black text-slate-400 uppercase">Score Local</span>
+                        </div>
+                        <div className={`px-3 py-1.5 rounded-xl text-[8px] font-black uppercase ${feasibility > 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                           {feasibility > 70 ? 'Optimal' : 'Sous tension'}
+                        </div>
+                    </div>
+
+                    {bestSite && bestSite.id !== selectedCrefocId && (
+                      <div 
+                        onClick={() => setSelectedCrefocId(bestSite.id)}
+                        className="bg-indigo-50/50 p-3 rounded-2xl border border-indigo-100/50 flex items-center justify-between cursor-pointer hover:bg-indigo-100 transition-colors"
+                      >
+                         <div className="flex flex-col">
+                            <span className="text-[7px] font-black text-indigo-400 uppercase tracking-widest">Meilleur Site Alternatif</span>
+                            <span className="text-[9px] font-black text-indigo-900">{bestSite.id}</span>
+                         </div>
+                         <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-black text-indigo-600">{bestSite.score}%</span>
+                            <Activity size={10} className="text-indigo-400" />
                          </div>
                       </div>
-                      <div className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-white">
-                         <ChevronRight size={14} />
-                      </div>
-                   </div>
-                </div>
-              ))}
+                    )}
+                  </div>
+                );
+              })}
            </div>
         </div>
 

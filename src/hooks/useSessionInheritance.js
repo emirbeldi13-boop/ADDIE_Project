@@ -24,7 +24,10 @@ export function useSessionInheritance(store, initialFormationId = '', initialSes
   }, [selectedFormationId, filteredSessions, selectedSessionId]);
 
   const session = allSessions.find(s => (s.id || s['ID Session']) === selectedSessionId) || null;
-  const formation = store.formations[selectedFormationId] || null;
+  const formation =
+    store.formations[selectedFormationId] ||
+    store.referential?.[selectedFormationId] ||
+    null;
   
   const isMasterMode = !selectedSessionId;
   

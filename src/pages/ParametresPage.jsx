@@ -520,11 +520,11 @@ export function ParametresPage({ data, alertCount, loadedAt, onMenuOpen, store }
         )}
         {tab === 'formations' && (
           <FormationsManager
-            formations={store.formations}
+            formations={store.referential}
             competences={store.competences}
-            updateFormation={store.updateFormation}
-            addFormation={store.addFormation}
-            deleteFormation={store.deleteFormation}
+            updateFormation={store.updateReferentialItem}
+            addFormation={store.addReferentialItem}
+            deleteFormation={store.deleteReferentialItem}
             updateObjectif={store.updateObjectif}
             addObjectif={store.addObjectif}
             deleteObjectif={store.deleteObjectif}

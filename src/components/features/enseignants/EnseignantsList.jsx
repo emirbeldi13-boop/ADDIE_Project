@@ -159,16 +159,27 @@ export function EnseignantsList({ enseignants, store }) {
   // --- HIERARCHICAL FILTERS LOGIC ---
   const [activeFamily, setActiveFamily] = useState(null);
   
-  // Group formations by their family code (F1, F2...)
+  // Group modules from referential by their family code (F1, F2...)
   const families = useMemo(() => {
     const map = {};
+    // First, initialize with families from store.formations
     Object.entries(store.formations || {}).forEach(([id, f]) => {
+      map[id] = { id, name: f.family || f.libelle, modules: [] };
+    });
+    
+    // Then, fill with modules from store.referential
+    Object.entries(store.referential || {}).forEach(([id, mod]) => {
       const root = id.split('.')[0];
-      if (!map[root]) map[root] = { id: root, name: f.family || f.libelle, modules: [] };
-      map[root].modules.push({ id, ...f });
+      if (map[root]) {
+        map[root].modules.push({ id, ...mod });
+      } else {
+        // Fallback if family not in store.formations but exists in referential
+        if (!map[root]) map[root] = { id: root, name: `Thématique ${root}`, modules: [] };
+        map[root].modules.push({ id, ...mod });
+      }
     });
     return Object.values(map).sort((a, b) => a.id.localeCompare(b.id));
-  }, [store.formations]);
+  }, [store.formations, store.referential]);
 
   return (
     <div className="space-y-4">
@@ -537,6 +548,7 @@ export function EnseignantsList({ enseignants, store }) {
         <EnseignantEditModal
           enseignant={modal.enseignant}
           formations={store.formations}
+          referential={store.referential}
           crefocs={store.crefocs}
           visits={store.visits}
           isNew={modal.mode === 'add'}
