@@ -6,6 +6,7 @@
  * For super_admin we still pass user_id explicitly on writes (RLS allows it).
  */
 
+import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../supabase';
 import {
   enseignantFromDB, enseignantToDB,
@@ -363,7 +364,6 @@ export async function updateProfile(id, changes) {
 
 export async function adminCreateUser(email, password, metadata) {
   // We use a secondary client so we don't overwrite the current admin session.
-  const { createClient } = await import('@supabase/supabase-js');
   const tempClient = createClient(
     import.meta.env.VITE_SUPABASE_URL,
     import.meta.env.VITE_SUPABASE_ANON_KEY,
