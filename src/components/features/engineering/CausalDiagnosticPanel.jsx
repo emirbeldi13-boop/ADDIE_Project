@@ -18,6 +18,8 @@ import {
   buildDebtCompensationPlan,
   findFusionSuggestions,
 } from '../../../utils/causalEngine';
+import { CausalTree } from './CausalTree';
+
 
 function debtLabel(level) {
   if (level === 'null') return 'Nulle';
@@ -141,7 +143,8 @@ export function CausalDiagnosticPanel({
     return Object.values(rootGroups)
       .sort((a, b) => b.scoreCausal - a.scoreCausal)
       .slice(0, 3);
-  }, [selectedRCs, aggregateScores, threshold, store.referential, causalRobustnessLevel]);
+  }, [selectedRCs, aggregateScores, threshold, store.referential, causalRobustnessLevel, store.riskThresholds]); // Added riskThresholds for reactivity
+
 
   const cycleResults = useMemo(() => {
     if (!robustness?.isMacro || !diagnosticResults.length) return diagnosticResults;
@@ -159,7 +162,8 @@ export function CausalDiagnosticPanel({
         affectedCircos: circosWithDeficit,
       };
     });
-  }, [diagnosticResults, robustness, allAggregateScores, threshold, participants]);
+  }, [diagnosticResults, robustness, allAggregateScores, threshold, participants, store.riskThresholds]);
+
 
   const processingOrderRaw = useMemo(() => {
     return cycleResults.map((res) => {
@@ -240,12 +244,21 @@ export function CausalDiagnosticPanel({
       <div className={resultsOnly || hideResults ? "space-y-8" : "grid grid-cols-1 xl:grid-cols-2 gap-8"}>
         {!resultsOnly && (
         <div className="space-y-6">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 mb-6">
             <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600 flex-shrink-0">
               <Network size={20} />
             </div>
             <h3 className="text-lg font-bold tracking-tight text-slate-900 uppercase">Phase 3. Diagnostic Causal & Racines</h3>
           </div>
+
+          <CausalTree 
+             store={store} 
+             aggregateScores={aggregateScores} 
+             allAggregateScores={allAggregateScores} 
+             participants={participants}
+             threshold={threshold}
+             robustnessLevel={causalRobustnessLevel}
+          />
 
           {fusionSuggestions.filter((f) => f.fusionEligible).length > 0 && (
             <div className="p-4 rounded-2xl bg-indigo-50 border border-indigo-100 space-y-2">
